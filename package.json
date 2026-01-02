@@ -1,0 +1,16 @@
+{
+  "name": "telegram-feed-pages",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-posts.mjs",
+    "dev": "wrangler pages dev public --compatibility-date=2025-12-31 --persist-to .wrangler/state",
+    "preview": "wrangler pages dev public --compatibility-date=2025-12-31 --persist-to .wrangler/state"
+  },
+  "dependencies": {
+    "gray-matter": "^4.0.3"
+  },
+  "devDependencies": {
+    "wrangler": "^3.102.0"
+  }
+}

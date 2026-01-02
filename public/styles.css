@@ -1,0 +1,380 @@
+/* =========================
+   Global wallpaper background
+   ========================= */
+:root{
+  --bg: #000;
+  --wallpaper: url("https://static.wixstatic.com/media/cf5365_875be0a445f646378095e91a8d649824~mv2.png");
+  --bubble: rgba(26, 30, 36, 0.88);
+  --bubble-border: rgba(255,255,255,0.08);
+  --text: rgba(255,255,255,0.92);
+  --muted: rgba(255,255,255,0.62);
+  --accent: #4aa3ff; /* Telegram-ish blue */
+  --pill: rgba(255,255,255,0.08);
+  --pill-hover: rgba(255,255,255,0.14);
+  --pill-selected: rgba(74,163,255,0.22);
+  --pill-selected-border: rgba(74,163,255,0.45);
+  --gap: 10px;
+  --collage-gap: 2px;
+  --topbar-h: 56px;
+  --feed-max: 860px;
+  --collage-h: 260px;
+}
+@media (min-width: 901px){
+  :root{ --collage-h: 320px; }
+}
+
+html, body{
+  height: 100%;
+}
+body{
+  margin:0;
+  background-color: var(--bg);
+  background-image: var(--wallpaper);
+  background-repeat: repeat;
+  background-position: center top;
+  background-size: 600px auto; /* fallback */
+  color: var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Responsive background-size targets */
+@media (max-width: 480px){
+  body{ background-size: 1200px auto; }
+}
+@media (min-width: 481px) and (max-width: 900px){
+  body{ background-size: 560px auto; }
+}
+@media (min-width: 901px){
+  body{ background-size: 640px auto; }
+}
+
+/* =========================
+   Topbar (Telegram-like)
+   ========================= */
+.topbar{
+  position: sticky;
+  top: 0;
+  height: var(--topbar-h);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  background: rgba(10, 12, 16, 0.72);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+}
+.topbar__back{
+  width: 40px;
+  height: 40px;
+  border: 0;
+  background: transparent;
+  color: rgba(255,255,255,0.90);
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.topbar__back:hover{ background: rgba(255,255,255,0.08); }
+.topbar__back svg{ width: 22px; height: 22px; }
+
+.topbar__title{
+  flex: 1;
+  text-align: center;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 10px;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar__avatar{
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  flex: 0 0 auto;
+}
+.topbar__avatar img{
+  width:100%;
+  height:100%;
+  object-fit: cover;
+  display:block;
+}
+
+/* =========================
+   Page + feed
+   ========================= */
+.page{
+  padding: 12px 10px 28px;
+}
+.feed{
+  max-width: var(--feed-max);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap); /* 10px gap between post bubbles */
+}
+.loading{
+  padding: 16px;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* =========================
+   Post bubble (Telegram-ish)
+   ========================= */
+.post{
+  border-radius: 16px;
+  background: var(--bubble);
+  border: 1px solid var(--bubble-border);
+  box-shadow: 0 10px 24px rgba(0,0,0,0.34);
+  overflow: hidden;
+}
+.post__inner{
+  padding: 10px 10px 8px;
+}
+.post__group{
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.post__caption{
+  margin-top: 10px;
+  font-size: 15px;
+  line-height: 1.35;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* =========================
+   Media collage
+   ========================= */
+.collage{
+  width: 100%;
+  height: var(--collage-h);
+  display: flex;
+  flex-direction: column;
+  gap: var(--collage-gap);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.collage-row{
+  display: grid;
+  gap: var(--collage-gap);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.collage-row.cols-2{ grid-template-columns: 1fr 1fr; }
+.collage-row.cols-3{ grid-template-columns: 1fr 1fr 1fr; }
+.collage-row.cols-4{ grid-template-columns: 1fr 1fr 1fr 1fr; }
+
+/* Special: large left + stacked right */
+.collage-split{
+  display: grid;
+  gap: var(--collage-gap);
+  grid-template-columns: 2fr 1fr;
+  height: var(--collage-h);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.collage-split__right{
+  display: grid;
+  gap: var(--collage-gap);
+}
+
+/* Tile */
+.tile{
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: rgba(255,255,255,0.04);
+  overflow: hidden;
+  cursor: pointer;
+}
+.tile img, .tile video{
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display:block;
+}
+.tile:active{ transform: scale(0.995); }
+.play-badge{
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+}
+.play-badge span{
+  width: 46px;
+  height: 46px;
+  border-radius: 999px;
+  background: rgba(0,0,0,0.38);
+  border: 1px solid rgba(255,255,255,0.18);
+  display: grid;
+  place-items: center;
+  font-size: 18px;
+}
+.more-badge{
+  position:absolute;
+  inset:0;
+  display:grid;
+  place-items:center;
+  background: rgba(0,0,0,0.42);
+  font-weight: 800;
+  font-size: 18px;
+  letter-spacing: 0.02em;
+  color: rgba(255,255,255,0.95);
+}
+
+/* =========================
+   Reactions row (Telegram pills)
+   ========================= */
+.reactions{
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.pill{
+  border: 1px solid rgba(255,255,255,0.10);
+  background: var(--pill);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-size: 14px;
+  line-height: 1;
+  color: rgba(255,255,255,0.90);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+.pill:hover{ background: var(--pill-hover); }
+.pill--selected{
+  background: var(--pill-selected);
+  border-color: var(--pill-selected-border);
+}
+
+/* =========================
+   Footer metadata (bottom-right)
+   ========================= */
+.meta{
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.meta .eye{
+  margin-right: 6px;
+  opacity: 0.9;
+}
+.meta .sep{
+  margin: 0 6px;
+  opacity: 0.55;
+}
+
+/* =========================
+   Lightbox
+   ========================= */
+.lightbox{
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: none;
+}
+.lightbox[aria-hidden="false"]{ display:block; }
+
+.lightbox__backdrop{
+  position:absolute;
+  inset:0;
+  background: rgba(0,0,0,0.74);
+}
+.lightbox__panel{
+  position:absolute;
+  inset: 12px;
+  max-width: 980px;
+  margin: auto;
+  background: rgba(10, 12, 16, 0.88);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 16px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.lightbox__content{
+  flex: 1 1 auto;
+  display: grid;
+  place-items: center;
+  padding: 10px;
+  min-height: 0;
+}
+.lightbox__content img, .lightbox__content video{
+  max-width: 100%;
+  max-height: 70vh;
+  width: auto;
+  height: auto;
+  border-radius: 12px;
+  display:block;
+}
+.lightbox__caption{
+  padding: 10px 12px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  border-top: 1px solid rgba(255,255,255,0.10);
+  min-height: 18px;
+}
+
+.lightbox__close{
+  position:absolute;
+  top: 10px;
+  right: 10px;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.92);
+  cursor:pointer;
+  z-index: 3;
+}
+.lightbox__close:hover{ background: rgba(255,255,255,0.10); }
+
+.lightbox__nav{
+  position:absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 56px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.92);
+  cursor:pointer;
+  z-index: 3;
+  font-size: 28px;
+  line-height: 1;
+}
+.lightbox__nav:hover{ background: rgba(255,255,255,0.10); }
+.lightbox__nav--left{ left: 10px; }
+.lightbox__nav--right{ right: 10px; }
+
+/* Keep taps friendly */
+@media (max-width: 480px){
+  .lightbox__panel{ inset: 8px; }
+  .lightbox__nav{ display:none; }
+}

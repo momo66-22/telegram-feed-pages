@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Telegram-style Feed</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <meta name="color-scheme" content="dark" />
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <button class="topbar__back" id="backBtn" aria-label="Back">
+      <!-- simple arrow icon -->
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M15.5 5.5L9 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+
+    <div class="topbar__title" id="channelTitle">MEDIA</div>
+
+    <div class="topbar__avatar" aria-label="Avatar">
+      <img id="avatarImg" alt="Avatar" />
+    </div>
+  </header>
+
+  <main class="page" role="main">
+    <div class="feed" id="feed">
+      <div class="loading" id="loading">Loading…</div>
+    </div>
+  </main>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox" aria-hidden="true">
+    <div class="lightbox__backdrop" id="lbBackdrop"></div>
+    <div class="lightbox__panel" role="dialog" aria-modal="true" aria-label="Media viewer">
+      <button class="lightbox__close" id="lbClose" aria-label="Close">✕</button>
+      <button class="lightbox__nav lightbox__nav--left" id="lbPrev" aria-label="Previous">‹</button>
+      <button class="lightbox__nav lightbox__nav--right" id="lbNext" aria-label="Next">›</button>
+
+      <div class="lightbox__content" id="lbContent"></div>
+      <div class="lightbox__caption" id="lbCaption"></div>
+    </div>
+  </div>
+
+  <script src="/app.js" defer></script>
+</body>
+</html>

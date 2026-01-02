@@ -1,0 +1,74 @@
+[
+  {
+    "post_id": "2026-01-01-0001",
+    "created_at": "2026-01-02T01:30:00.000Z",
+    "group_title": "Media",
+    "caption_text": "My caption text goes here.",
+    "media": [
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1520975916090-3105956dac38?auto=format&fit=crop&w=1400&q=60"
+      },
+      {
+        "type": "video",
+        "url": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+        "thumb_url": "https://images.unsplash.com/photo-1520975916090-3105956dac38?auto=format&fit=crop&w=800&q=60"
+      }
+    ],
+    "views": 0,
+    "pinned": false
+  },
+  {
+    "post_id": "2025-12-31-0001",
+    "created_at": "2026-01-01T01:34:00.000Z",
+    "group_title": "Media",
+    "caption_text": "**Demo post** (3 media). Tap a tile to open the viewer.",
+    "media": [
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1520975916090-3105956dac38?auto=format&fit=crop&w=1400&q=60"
+      },
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1400&q=60"
+      },
+      {
+        "type": "video",
+        "url": "https://interactive-examples.mdn.mozilla.net/media/cc0-videos/flower.mp4",
+        "thumb_url": "https://images.unsplash.com/photo-1520975916090-3105956dac38?auto=format&fit=crop&w=800&q=60"
+      }
+    ],
+    "views": 2,
+    "pinned": false
+  },
+  {
+    "post_id": "2025-12-30-0001",
+    "created_at": "2025-12-31T05:12:00.000Z",
+    "group_title": "Media",
+    "caption_text": "5-media collage template.",
+    "media": [
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1482192596544-9eb780fc7f66?auto=format&fit=crop&w=1400&q=60"
+      },
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1520975682081-9713d75d4f70?auto=format&fit=crop&w=1400&q=60"
+      },
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1520975679996-7f4a5f1aa59c?auto=format&fit=crop&w=1400&q=60"
+      },
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1469474968028-56623f02e42e?auto=format&fit=crop&w=1400&q=60"
+      },
+      {
+        "type": "image",
+        "url": "https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1400&q=60"
+      }
+    ],
+    "views": 10500,
+    "pinned": false
+  }
+]
