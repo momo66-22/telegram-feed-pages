@@ -1,10 +1,10 @@
-/* Telegram-style feed (no framework) */
+/* Telegram-style feed (NEW) */
 
 const CONFIG = {
-  channelTitle: "MEDIA",                 // header title (ALL CAPS)
-  defaultGroupTitle: "Media",            // label shown on every post bubble (top-left)
-  avatarUrl: "https://picsum.photos/200",// replace with your avatar image URL
-  fallbackBackUrl: "/",                  // used if there's no browser history
+  channelTitle: "MEDIA",                  // header title (ALL CAPS)
+  defaultGroupTitle: "Media",             // label shown on every post bubble (top-left)
+  avatarUrl: "https://picsum.photos/200", // replace with your avatar image URL
+  fallbackBackUrl: "/",            // used if there's no browser history
   reactions: ["❤", "👍", "🔥"],
 };
 
@@ -14,13 +14,21 @@ const channelTitleEl = document.getElementById("channelTitle");
 const avatarImgEl = document.getElementById("avatarImg");
 const backBtn = document.getElementById("backBtn");
 
-channelTitleEl.textContent = CONFIG.channelTitle;
-avatarImgEl.src = CONFIG.avatarUrl;
+function applyHeader() {
+  if (channelTitleEl) channelTitleEl.textContent = CONFIG.channelTitle || "";
+  if (avatarImgEl) {
+    avatarImgEl.src = CONFIG.avatarUrl || "";
+    avatarImgEl.alt = (CONFIG.defaultGroupTitle || "Avatar") + " avatar";
+  }
+}
 
-backBtn.addEventListener("click", () => {
-  if (window.history.length > 1) window.history.back();
-  else window.location.href = CONFIG.fallbackBackUrl;
-});
+function setBackBehavior() {
+  if (!backBtn) return;
+  backBtn.onclick = () => {
+    if (window.history.length > 1) window.history.back();
+    else window.location.href = CONFIG.fallbackBackUrl || "/";
+  };
+}
 
 // -----------------------
 // Anonymous user identity
@@ -31,7 +39,7 @@ function getUserId() {
   if (!id) {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
-    id = [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+    id = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
     localStorage.setItem(key, id);
   }
   return id;
@@ -47,15 +55,13 @@ function formatCompact(n) {
   const abs = Math.abs(num);
 
   const fmt = (v, suffix) => {
-    // show 1 decimal only if it matters
     const rounded1 = Math.round(v * 10) / 10;
     if (Math.abs(rounded1 - Math.round(rounded1)) < 1e-9) return `${Math.round(rounded1)}${suffix}`;
     return `${rounded1}${suffix}`;
   };
 
   if (abs < 1000) return String(num);
-  if (abs < 10_000) return fmt(num / 1000, "K");      // 1200 -> 1.2K
-  if (abs < 100_000) return fmt(num / 1000, "K");     // 10500 -> 10.5K
+  if (abs < 100_000) return fmt(num / 1000, "K"); // 1200 -> 1.2K, 10500 -> 10.5K
   if (abs < 1_000_000) return `${Math.round(num / 1000)}K`; // 100000 -> 100K
   if (abs < 10_000_000) return fmt(num / 1_000_000, "M");   // 1.2M
   if (abs < 1_000_000_000) return `${Math.round(num / 1_000_000)}M`;
@@ -74,13 +80,16 @@ function formatTime(ts) {
 // - supports **bold**, *italic*, `code`, and [text](url)
 // -----------------------
 function escapeHtml(str) {
-  return String(str).replace(/[&<>"']/g, ch => ({
-    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  return String(str).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
   }[ch]));
 }
 function renderCaption(md) {
   const s = escapeHtml(md || "");
-  // basic inline markdown (after escaping)
   let out = s
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
@@ -91,7 +100,53 @@ function renderCaption(md) {
 }
 
 // -----------------------
-// Lightbox viewer (swipe + arrows + no background scroll)
+// Groups support
+// -----------------------
+function assetUrl(path) {
+  // Relative to current page (works for /, /public/index.html in Live Server, etc.)
+  return new URL(path, window.location.href).toString();
+}
+
+async function loadGroups() {
+  try {
+    const r = await fetch(assetUrl("groups.json"), { cache: "no-store" });
+    if (!r.ok) return [];
+    const groups = await r.json();
+    return Array.isArray(groups) ? groups : [];
+  } catch {
+    return [];
+  }
+}
+
+function getGroupFromUrl(groups) {
+  const url = new URL(location.href);
+  const slug = (url.searchParams.get("g") || "").trim();
+
+  if (!slug) return { mode: "group", group: groups[0] || null, slug: groups[0]?.slug || "" };
+  if (slug.toLowerCase() === "all") return { mode: "all", group: null, slug: "all" };
+
+  const found = groups.find((g) => String(g.slug || "").toLowerCase() === slug.toLowerCase());
+  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {}).slug || "" };
+}
+
+function applyGroupToConfig(sel) {
+  // Default behavior if no groups.json or no match
+  if (sel.mode === "all") {
+    CONFIG.channelTitle = "ALL";
+    CONFIG.defaultGroupTitle = "All";
+    // accent stays whatever CSS default is
+    return;
+  }
+  if (!sel.group) return;
+
+  CONFIG.channelTitle = (sel.group.channelTitle || sel.group.title || CONFIG.channelTitle || "").toUpperCase();
+  CONFIG.defaultGroupTitle = sel.group.title || CONFIG.defaultGroupTitle;
+  if (sel.group.avatarUrl) CONFIG.avatarUrl = sel.group.avatarUrl;
+  if (sel.group.accent) document.documentElement.style.setProperty("--accent", sel.group.accent);
+}
+
+// -----------------------
+// Lightbox viewer (fixed: no-scroll + arrows + swipe)
 // -----------------------
 const lightbox = document.getElementById("lightbox");
 const lbBackdrop = document.getElementById("lbBackdrop");
@@ -99,44 +154,49 @@ const lbClose = document.getElementById("lbClose");
 const lbPrev = document.getElementById("lbPrev");
 const lbNext = document.getElementById("lbNext");
 const lbContent = document.getElementById("lbContent");
+const lbCaption = document.getElementById("lbCaption");
 
 const LB_STATE = { media: [], index: 0 };
 
 let _lockedScrollY = 0;
 
-function lockBodyScroll(){
+function lockBodyScroll() {
   _lockedScrollY = window.scrollY || document.documentElement.scrollTop || 0;
   document.body.classList.add("no-scroll");
   document.body.style.top = `-${_lockedScrollY}px`;
 }
-
-function unlockBodyScroll(){
+function unlockBodyScroll() {
   if (!document.body.classList.contains("no-scroll")) return;
   document.body.classList.remove("no-scroll");
   document.body.style.top = "";
   window.scrollTo(0, _lockedScrollY);
 }
 
-function renderLightbox(){
+function renderLightbox() {
   const item = LB_STATE.media[LB_STATE.index];
   lbContent.innerHTML = "";
+  if (lbCaption) lbCaption.textContent = "";
+
   if (!item) return;
 
   const src = item.url || item.thumb_url;
-  if (!src){
+  if (!src) {
     lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Missing media URL</div>`;
     return;
   }
 
-  if (item.type === "video"){
+  if (item.type === "video") {
     const v = document.createElement("video");
     v.controls = true;
     v.playsInline = true;
     v.preload = "metadata";
     v.src = src;
+    if (item.thumb_url) v.poster = item.thumb_url;
+
     v.addEventListener("error", () => {
       lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Couldn’t load this video.</div>`;
     });
+
     lbContent.appendChild(v);
   } else {
     const img = document.createElement("img");
@@ -144,46 +204,51 @@ function renderLightbox(){
     img.loading = "eager";
     img.decoding = "async";
     img.src = src;
+
     img.addEventListener("error", () => {
       lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Couldn’t load this image.</div>`;
     });
+
     lbContent.appendChild(img);
   }
 
+  if (lbCaption) lbCaption.textContent = item.caption || "";
+
   const hasMany = LB_STATE.media.length > 1;
-  lbPrev.style.display = hasMany ? "" : "none";
-  lbNext.style.display = hasMany ? "" : "none";
+  if (lbPrev) lbPrev.style.display = hasMany ? "" : "none";
+  if (lbNext) lbNext.style.display = hasMany ? "" : "none";
 }
 
-function openLightbox(media, index = 0){
+function openLightbox(media, index = 0) {
   if (!Array.isArray(media) || media.length === 0) return;
+
   LB_STATE.media = media;
   LB_STATE.index = Math.max(0, Math.min(index, media.length - 1));
 
   renderLightbox();
   lightbox.setAttribute("aria-hidden", "false");
   lockBodyScroll();
-
-  lbClose.focus?.();
+  lbClose?.focus?.();
 }
 
-function closeLightbox(){
+function closeLightbox() {
   lightbox.setAttribute("aria-hidden", "true");
   lbContent.innerHTML = "";
+  if (lbCaption) lbCaption.textContent = "";
   unlockBodyScroll();
 }
 
-function step(dir){
+function step(dir) {
   const m = LB_STATE.media;
   if (!m || m.length === 0) return;
   LB_STATE.index = (LB_STATE.index + dir + m.length) % m.length;
   renderLightbox();
 }
 
-lbClose.addEventListener("click", closeLightbox);
-lbBackdrop.addEventListener("click", closeLightbox);
-lbPrev.addEventListener("click", () => step(-1));
-lbNext.addEventListener("click", () => step(1));
+lbClose?.addEventListener("click", closeLightbox);
+lbBackdrop?.addEventListener("click", closeLightbox);
+lbPrev?.addEventListener("click", () => step(-1));
+lbNext?.addEventListener("click", () => step(1));
 
 document.addEventListener("keydown", (e) => {
   if (lightbox.getAttribute("aria-hidden") === "true") return;
@@ -195,7 +260,7 @@ document.addEventListener("keydown", (e) => {
 // Swipe support
 let swipe = { active: false, startX: 0, startY: 0 };
 
-lbContent.addEventListener("pointerdown", (e) => {
+lbContent?.addEventListener("pointerdown", (e) => {
   if (lightbox.getAttribute("aria-hidden") === "true") return;
   swipe.active = true;
   swipe.startX = e.clientX;
@@ -203,31 +268,36 @@ lbContent.addEventListener("pointerdown", (e) => {
   try { lbContent.setPointerCapture(e.pointerId); } catch {}
 });
 
-lbContent.addEventListener("pointerup", (e) => {
+lbContent?.addEventListener("pointerup", (e) => {
   if (!swipe.active) return;
   swipe.active = false;
+
   const dx = e.clientX - swipe.startX;
   const dy = e.clientY - swipe.startY;
 
-  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2){
-    step(dx < 0 ? 1 : -1); // swipe left => next
+  // swipe left/right only if it's mostly horizontal
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+    step(dx < 0 ? 1 : -1);
   }
 });
 
-lbContent.addEventListener("pointercancel", () => { swipe.active = false; });
-
+lbContent?.addEventListener("pointercancel", () => { swipe.active = false; });
 
 // -----------------------
 // Collage templates (1–10)
 // -----------------------
-function tileFor(item, onClick, overlayText=null, isVideo=false) {
+function tileFor(item, onClick, overlayText = null) {
   const tile = document.createElement("div");
   tile.className = "tile";
   tile.tabIndex = 0;
   tile.setAttribute("role", "button");
+
   tile.addEventListener("click", onClick);
   tile.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick(); }
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick();
+    }
   });
 
   // Use <img> in the feed for both images and video thumbs (fast).
@@ -243,7 +313,7 @@ function tileFor(item, onClick, overlayText=null, isVideo=false) {
   img.alt = item.caption || "";
   tile.appendChild(img);
 
-  if (item.type === "video" || isVideo) {
+  if (item.type === "video") {
     const play = document.createElement("div");
     play.className = "play-badge";
     play.innerHTML = "<span>▶</span>";
@@ -267,18 +337,18 @@ function renderCollage(media) {
   const overflow = media.length - full.length;
 
   const openAt = (idx) => openLightbox(media, idx);
-
   const n = full.length;
 
-  // Helper: build rows
   const makeRows = (rows) => {
     const collage = document.createElement("div");
     collage.className = "collage";
     let cursor = 0;
-    rows.forEach((cols, rowIdx) => {
+
+    rows.forEach((cols) => {
       const row = document.createElement("div");
       row.className = `collage-row cols-${cols}`;
-      for (let i=0;i<cols;i++){
+
+      for (let i = 0; i < cols; i++) {
         const item = full[cursor];
         if (!item) break;
 
@@ -290,20 +360,21 @@ function renderCollage(media) {
       }
       collage.appendChild(row);
     });
+
     return collage;
   };
 
-  // Special templates
   if (n === 1) {
     const collage = document.createElement("div");
     collage.className = "collage";
     collage.style.height = "auto";
+
     const row = document.createElement("div");
     row.className = "collage-row cols-1";
     row.style.gridTemplateColumns = "1fr";
     row.style.height = "var(--collage-h)";
-    const item = full[0];
-    row.appendChild(tileFor(item, () => openAt(0)));
+
+    row.appendChild(tileFor(full[0], () => openAt(0)));
     collage.appendChild(row);
     return collage;
   }
@@ -311,36 +382,34 @@ function renderCollage(media) {
   if (n === 2) return makeRows([2]);
 
   if (n === 3 || n === 4) {
-    // Left big tile, right stacked (2 or 3)
     const wrap = document.createElement("div");
     wrap.className = "collage-split";
 
-    const left = tileFor(full[0], () => openAt(0));
-    wrap.appendChild(left);
+    wrap.appendChild(tileFor(full[0], () => openAt(0)));
 
     const right = document.createElement("div");
     right.className = "collage-split__right";
-    right.style.gridTemplateRows = `repeat(${n-1}, 1fr)`;
+    right.style.gridTemplateRows = `repeat(${n - 1}, 1fr)`;
 
-    for (let i=1;i<n;i++){
-      const isLastTile = (i === n-1) && overflow > 0;
+    for (let i = 1; i < n; i++) {
+      const isLastTile = (i === n - 1) && overflow > 0;
       const overlay = isLastTile ? `+${overflow}` : null;
       right.appendChild(tileFor(full[i], () => openAt(i), overlay));
     }
+
     wrap.appendChild(right);
     return wrap;
   }
 
-  // Row-based templates
-  if (n === 5) return makeRows([2,3]);
-  if (n === 6) return makeRows([3,3]);
-  if (n === 7) return makeRows([2,2,3]);
-  if (n === 8) return makeRows([2,3,3]);
-  if (n === 9) return makeRows([3,3,3]);
-  if (n === 10) return makeRows([3,4,3]);
+  if (n === 5) return makeRows([2, 3]);
+  if (n === 6) return makeRows([3, 3]);
+  if (n === 7) return makeRows([2, 2, 3]);
+  if (n === 8) return makeRows([2, 3, 3]);
+  if (n === 9) return makeRows([3, 3, 3]);
+  if (n === 10) return makeRows([3, 4, 3]);
 
-  // Overflow (if ever allowed >10): use first 10 with 10-template +N on last
-  return makeRows([3,4,3]);
+  // Fallback
+  return makeRows([3, 4, 3]);
 }
 
 // -----------------------
@@ -350,23 +419,25 @@ async function apiGetReactions(postId) {
   const u = new URL("/api/reactions", location.origin);
   u.searchParams.set("post_id", postId);
   u.searchParams.set("user_id", USER_ID);
-  const res = await fetch(u.toString(), { headers: { "Accept":"application/json" }});
+  const res = await fetch(u.toString(), { headers: { Accept: "application/json" } });
   if (!res.ok) throw new Error("reactions GET failed");
   return res.json();
 }
+
 async function apiToggleReaction(postId, emoji) {
   const res = await fetch("/api/reactions/toggle", {
     method: "POST",
-    headers: { "Content-Type":"application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ post_id: postId, emoji, user_id: USER_ID }),
   });
   if (!res.ok) throw new Error("reactions toggle failed");
   return res.json();
 }
+
 async function apiSeenView(postId) {
   const res = await fetch("/api/views/seen", {
     method: "POST",
-    headers: { "Content-Type":"application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ post_id: postId, user_id: USER_ID }),
   });
   if (!res.ok) return null;
@@ -405,23 +476,25 @@ function makePostEl(post) {
   reactions.className = "reactions";
 
   const pillEls = new Map();
-  CONFIG.reactions.forEach(emoji => {
+  CONFIG.reactions.forEach((emoji) => {
     const pill = document.createElement("button");
     pill.className = "pill";
     pill.type = "button";
     pill.dataset.emoji = emoji;
     pill.innerHTML = `<span class="emoji">${emoji}</span><span class="count">0</span>`;
+
     pill.addEventListener("click", async () => {
-      try{
+      try {
         pill.disabled = true;
         const data = await apiToggleReaction(postId, emoji);
         applyReactionsState(pillEls, data);
-      } catch (e){
+      } catch (e) {
         console.warn(e);
-      } finally{
+      } finally {
         pill.disabled = false;
       }
     });
+
     pillEls.set(emoji, pill);
     reactions.appendChild(pill);
   });
@@ -429,15 +502,19 @@ function makePostEl(post) {
 
   const meta = document.createElement("div");
   meta.className = "meta";
-  meta.innerHTML = `<span class="eye">👁</span><span class="views">${formatCompact(post.views || 0)}</span><span class="sep"></span><span class="time">${formatTime(createdAt)}</span>`;
+  meta.innerHTML =
+    `<span class="eye">👁</span>` +
+    `<span class="views">${formatCompact(post.views || 0)}</span>` +
+    `<span class="sep"></span>` +
+    `<span class="time">${formatTime(createdAt)}</span>`;
   inner.appendChild(meta);
 
   bubble.appendChild(inner);
 
   // Fetch & apply reactions
-  apiGetReactions(postId).then(data => applyReactionsState(pillEls, data)).catch(()=>{});
+  apiGetReactions(postId).then((data) => applyReactionsState(pillEls, data)).catch(() => {});
 
-  // View tracking: mark "seen" when the bubble enters viewport
+  // View tracking
   bubble._seen = false;
   bubble._updateViews = (v) => {
     const el = bubble.querySelector(".views");
@@ -459,49 +536,80 @@ function applyReactionsState(pillEls, data) {
 }
 
 // -----------------------
-// Load posts (Option A or B both produce /posts.json)
+// Load posts (Option A or B both produce posts.json)
 // -----------------------
 async function loadPosts() {
-  const res = await fetch(`/posts.json?cb=${Date.now()}`);
+  const res = await fetch(assetUrl("posts.json") + `?cb=${Date.now()}`);
   if (!res.ok) throw new Error("posts.json missing");
   const posts = await res.json();
-  // newest first
-  posts.sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+  posts.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
   return posts;
 }
 
 // -----------------------
 // View observer
 // -----------------------
-const io = new IntersectionObserver(async (entries) => {
-  for (const e of entries) {
-    if (!e.isIntersecting) continue;
-    const el = e.target;
-    if (el._seen) continue;
-    el._seen = true;
-    const postId = el.dataset.postId;
-    const data = await apiSeenView(postId);
-    if (data?.views != null) el._updateViews(data.views);
-  }
-}, { threshold: 0.5 });
+const io = new IntersectionObserver(
+  async (entries) => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const el = e.target;
+      if (el._seen) continue;
+      el._seen = true;
 
+      const postId = el.dataset.postId;
+      const data = await apiSeenView(postId);
+      if (data?.views != null) el._updateViews(data.views);
+    }
+  },
+  { threshold: 0.5 }
+);
+
+// -----------------------
+// Main
+// -----------------------
 async function main() {
-  try{
-    const posts = await loadPosts();
-    loadingEl?.remove();
+  try {
+    // Load groups and select one based on ?g=
+    const groups = await loadGroups();
+    const sel = getGroupFromUrl(groups);
+    applyGroupToConfig(sel);
 
+    // Apply header/back after CONFIG updates
+    applyHeader();
+    setBackBehavior();
+
+    // Load posts
+    let posts = await loadPosts();
+
+    // Filter by group (unless "all")
+    if (sel.mode === "group" && sel.slug) {
+      const slug = String(sel.slug).toLowerCase();
+      const title = String(sel.group?.title || CONFIG.defaultGroupTitle || "").toLowerCase();
+
+      posts = posts.filter((p) => {
+        const pSlug = String(p.group_slug || "").toLowerCase();
+        const pTitle = String(p.group_title || "").toLowerCase();
+
+        // Prefer strict slug match; fallback to title match for older posts
+        if (pSlug) return pSlug === slug;
+        return !!title && pTitle === title;
+      });
+    }
+
+    // Render
+    loadingEl?.remove();
     const frag = document.createDocumentFragment();
     for (const post of posts) {
-      const el = makePostEl(post);
-      frag.appendChild(el);
+      frag.appendChild(makePostEl(post));
     }
     feedEl.appendChild(frag);
 
-    // attach observer after render
-    document.querySelectorAll(".post").forEach(el => io.observe(el));
-  }catch(err){
+    // Attach view observer after render
+    document.querySelectorAll(".post").forEach((el) => io.observe(el));
+  } catch (err) {
     console.error(err);
-    loadingEl.textContent = "Missing /posts.json. Run the build step or add posts.json.";
+    if (loadingEl) loadingEl.textContent = "Missing posts.json or build failed. Run npm run build.";
   }
 }
 

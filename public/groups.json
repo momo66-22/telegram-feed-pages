@@ -1,0 +1,18 @@
+[
+  {
+    "slug": "media",
+    "title": "Media",
+    "channelTitle": "MEDIA",
+    "avatarUrl": "https://i.pravatar.cc/120?img=12",
+    "accent": "#4aa3ff",
+    "description": "Photos + clips"
+  },
+  {
+    "slug": "sports",
+    "title": "Sports",
+    "channelTitle": "SPORTS",
+    "avatarUrl": "https://i.pravatar.cc/120?img=22",
+    "accent": "#7c3aed",
+    "description": "Highlights + news"
+  }
+]

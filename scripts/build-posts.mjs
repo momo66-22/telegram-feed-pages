@@ -50,6 +50,7 @@ function readMarkdownPosts() {
       post_id,
       created_at,
       group_title: data.group_title,
+      group_slug: data.group_slug || data.group || null,
       caption_text: (data.caption_text ? String(data.caption_text) : body),
       media: normalizeMedia(data.media),
       views: Number.isFinite(Number(data.views)) ? Number(data.views) : 0,
