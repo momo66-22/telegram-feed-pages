@@ -91,7 +91,7 @@ function renderCaption(md) {
 }
 
 // -----------------------
-// Lightbox viewer
+// Lightbox viewer (swipe + arrows + no background scroll)
 // -----------------------
 const lightbox = document.getElementById("lightbox");
 const lbBackdrop = document.getElementById("lbBackdrop");
@@ -99,56 +99,123 @@ const lbClose = document.getElementById("lbClose");
 const lbPrev = document.getElementById("lbPrev");
 const lbNext = document.getElementById("lbNext");
 const lbContent = document.getElementById("lbContent");
-const lbCaption = document.getElementById("lbCaption");
 
-let LB_STATE = { media: [], index: 0 };
+const LB_STATE = { media: [], index: 0 };
 
-function openLightbox(media, index = 0) {
-  LB_STATE = { media, index };
-  lightbox.setAttribute("aria-hidden", "false");
-  renderLightbox();
+let _lockedScrollY = 0;
+
+function lockBodyScroll(){
+  _lockedScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+  document.body.classList.add("no-scroll");
+  document.body.style.top = `-${_lockedScrollY}px`;
 }
-function closeLightbox() {
-  lightbox.setAttribute("aria-hidden", "true");
-  lbContent.innerHTML = "";
-  lbCaption.textContent = "";
+
+function unlockBodyScroll(){
+  if (!document.body.classList.contains("no-scroll")) return;
+  document.body.classList.remove("no-scroll");
+  document.body.style.top = "";
+  window.scrollTo(0, _lockedScrollY);
 }
-function renderLightbox() {
+
+function renderLightbox(){
   const item = LB_STATE.media[LB_STATE.index];
+  lbContent.innerHTML = "";
   if (!item) return;
 
-  lbContent.innerHTML = "";
-  if (item.type === "video") {
+  const src = item.url || item.thumb_url;
+  if (!src){
+    lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Missing media URL</div>`;
+    return;
+  }
+
+  if (item.type === "video"){
     const v = document.createElement("video");
     v.controls = true;
     v.playsInline = true;
-    v.src = item.url;
-    if (item.thumb_url) v.poster = item.thumb_url;
+    v.preload = "metadata";
+    v.src = src;
+    v.addEventListener("error", () => {
+      lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Couldn’t load this video.</div>`;
+    });
     lbContent.appendChild(v);
   } else {
     const img = document.createElement("img");
-    img.src = item.url;
     img.alt = item.caption || "";
+    img.loading = "eager";
+    img.decoding = "async";
+    img.src = src;
+    img.addEventListener("error", () => {
+      lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Couldn’t load this image.</div>`;
+    });
     lbContent.appendChild(img);
   }
-  lbCaption.textContent = item.caption || "";
+
+  const hasMany = LB_STATE.media.length > 1;
+  lbPrev.style.display = hasMany ? "" : "none";
+  lbNext.style.display = hasMany ? "" : "none";
 }
-function step(delta) {
-  const n = LB_STATE.media.length;
-  if (!n) return;
-  LB_STATE.index = (LB_STATE.index + delta + n) % n;
+
+function openLightbox(media, index = 0){
+  if (!Array.isArray(media) || media.length === 0) return;
+  LB_STATE.media = media;
+  LB_STATE.index = Math.max(0, Math.min(index, media.length - 1));
+
+  renderLightbox();
+  lightbox.setAttribute("aria-hidden", "false");
+  lockBodyScroll();
+
+  lbClose.focus?.();
+}
+
+function closeLightbox(){
+  lightbox.setAttribute("aria-hidden", "true");
+  lbContent.innerHTML = "";
+  unlockBodyScroll();
+}
+
+function step(dir){
+  const m = LB_STATE.media;
+  if (!m || m.length === 0) return;
+  LB_STATE.index = (LB_STATE.index + dir + m.length) % m.length;
   renderLightbox();
 }
-lbBackdrop.addEventListener("click", closeLightbox);
+
 lbClose.addEventListener("click", closeLightbox);
+lbBackdrop.addEventListener("click", closeLightbox);
 lbPrev.addEventListener("click", () => step(-1));
 lbNext.addEventListener("click", () => step(1));
+
 document.addEventListener("keydown", (e) => {
   if (lightbox.getAttribute("aria-hidden") === "true") return;
   if (e.key === "Escape") closeLightbox();
   if (e.key === "ArrowLeft") step(-1);
   if (e.key === "ArrowRight") step(1);
 });
+
+// Swipe support
+let swipe = { active: false, startX: 0, startY: 0 };
+
+lbContent.addEventListener("pointerdown", (e) => {
+  if (lightbox.getAttribute("aria-hidden") === "true") return;
+  swipe.active = true;
+  swipe.startX = e.clientX;
+  swipe.startY = e.clientY;
+  try { lbContent.setPointerCapture(e.pointerId); } catch {}
+});
+
+lbContent.addEventListener("pointerup", (e) => {
+  if (!swipe.active) return;
+  swipe.active = false;
+  const dx = e.clientX - swipe.startX;
+  const dy = e.clientY - swipe.startY;
+
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2){
+    step(dx < 0 ? 1 : -1); // swipe left => next
+  }
+});
+
+lbContent.addEventListener("pointercancel", () => { swipe.active = false; });
+
 
 // -----------------------
 // Collage templates (1–10)

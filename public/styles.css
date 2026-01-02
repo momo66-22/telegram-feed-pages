@@ -23,6 +23,14 @@
   :root{ --collage-h: 320px; }
 }
 
+body.no-scroll{
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
 html, body{
   height: 100%;
 }
@@ -373,8 +381,10 @@ body{
 .lightbox__nav--left{ left: 10px; }
 .lightbox__nav--right{ right: 10px; }
 
-/* Keep taps friendly */
 @media (max-width: 480px){
   .lightbox__panel{ inset: 8px; }
-  .lightbox__nav{ display:none; }
+  .lightbox__nav{ width: 40px; height: 52px; font-size: 26px; }
+  .lightbox__nav--left{ left: 8px; }
+  .lightbox__nav--right{ right: 8px; }
 }
+
