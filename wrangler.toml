@@ -1,12 +1,4 @@
-name = "telegram-feed-pages"
-compatibility_date = "2025-12-31"
-
-# For Cloudflare Pages, your build output is /public
-pages_build_output_dir = "public"
-
-# In production, set this binding in Pages > Settings > Functions > Bindings
-# For local dev with wrangler, you can create a KV namespace and paste its IDs here.
-# [[kv_namespaces]]
-# binding = "REACTIONS_KV"
-# id = "YOUR_KV_NAMESPACE_ID"
-# preview_id = "YOUR_KV_PREVIEW_ID"
+[[kv_namespaces]]
+binding = "REACTIONS_KV"
+id = "d2663247942d4a17b2f5514d7340401b"
+preview_id = "d2663247942d4a17b2f5514d7340401b"
