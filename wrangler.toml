@@ -1,3 +1,7 @@
+name = "telegram-feed-pages"
+pages_build_output_dir = "./public" # <-- IMPORTANT: match your Pages “Build output directory”
+compatibility_date = "2026-01-03"
+
 [[kv_namespaces]]
 binding = "REACTIONS_KV"
 id = "d2663247942d4a17b2f5514d7340401b"
