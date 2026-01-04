@@ -1,52 +1,54 @@
 export async function onRequestGet({ request, env }) {
   const url = new URL(request.url);
-  const postId = url.searchParams.get("post_id") || "";
-  const userId = url.searchParams.get("user_id") || "";
+  const postId = (url.searchParams.get("post_id") || "").trim();
+  const userId = (url.searchParams.get("user_id") || "").trim();
 
-  if (!postId || !userId) {
-    return json({ error: "missing post_id or user_id" }, 400);
-  }
+  if (!postId || !userId) return json({ error: "missing post_id or user_id" }, 400);
 
-  const counts = await getCounts(env, postId);
-  const mine = await getMine(env, postId, userId);
+  const [counts, mine] = await Promise.all([
+    getCounts(env, postId),
+    getMine(env, postId, userId),
+  ]);
 
-  return json({ counts, mine });
+  return json({ counts, mine }, 200, {
+    "Cache-Control": "no-store",
+  });
 }
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...extraHeaders,
+    },
   });
 }
 
 const ALLOWED = ["❤", "👍", "🔥"];
 
 async function getCounts(env, postId) {
-  const key = `r:counts:${postId}`;
-  const raw = await env.REACTIONS_KV.get(key);
   const base = { "❤": 0, "👍": 0, "🔥": 0 };
-  if (!raw) return base;
-  try {
-    const parsed = JSON.parse(raw);
-    for (const e of ALLOWED) {
-      if (Number.isFinite(Number(parsed?.[e]))) base[e] = Number(parsed[e]);
-    }
-    return base;
-  } catch {
-    return base;
-  }
+
+  const keys = ALLOWED.map((e) => `r:count:${postId}:${e}`);
+  const raws = await Promise.all(keys.map((k) => env.REACTIONS_KV.get(k)));
+
+  ALLOWED.forEach((e, i) => {
+    const n = Number(raws[i]);
+    if (Number.isFinite(n) && n >= 0) base[e] = Math.floor(n);
+  });
+
+  return base;
 }
 
 async function getMine(env, postId, userId) {
-  const key = `r:mine:${postId}:${userId}`;
-  const raw = await env.REACTIONS_KV.get(key);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed.filter(e => ALLOWED.includes(e));
-    return [];
-  } catch {
-    return [];
-  }
+  const keys = ALLOWED.map((e) => `r:mine:${postId}:${userId}:${e}`);
+  const raws = await Promise.all(keys.map((k) => env.REACTIONS_KV.get(k)));
+
+  const mine = [];
+  ALLOWED.forEach((e, i) => {
+    if (raws[i]) mine.push(e);
+  });
+
+  return mine;
 }

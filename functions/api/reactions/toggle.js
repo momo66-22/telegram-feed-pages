@@ -6,9 +6,9 @@ export async function onRequestPost({ request, env }) {
     return json({ error: "invalid json" }, 400);
   }
 
-  const postId = String(body?.post_id || "");
-  const userId = String(body?.user_id || "");
-  const emoji = String(body?.emoji || "");
+  const postId = String(body?.post_id || "").trim();
+  const userId = String(body?.user_id || "").trim();
+  const emoji  = String(body?.emoji || "").trim();
 
   if (!postId || !userId || !emoji) {
     return json({ error: "missing post_id / user_id / emoji" }, 400);
@@ -17,63 +17,75 @@ export async function onRequestPost({ request, env }) {
     return json({ error: "emoji not allowed" }, 400);
   }
 
-  const countsKey = `r:counts:${postId}`;
-  const mineKey = `r:mine:${postId}:${userId}`;
+  const mineKey  = `r:mine:${postId}:${userId}:${emoji}`;
+  const countKey = `r:count:${postId}:${emoji}`;
 
-  // Load current state
-  const counts = await getCounts(env, postId);
-  const mine = new Set(await getMine(env, postId, userId));
+  // 1) Read current "mine" state for THIS emoji only
+  const had = !!(await env.REACTIONS_KV.get(mineKey));
 
-  // Toggle
-  if (mine.has(emoji)) {
-    mine.delete(emoji);
-    counts[emoji] = Math.max(0, (counts[emoji] || 0) - 1);
+  // 2) Toggle mine state (only this emoji key)
+  let delta;
+  if (had) {
+    await env.REACTIONS_KV.delete(mineKey);
+    delta = -1;
   } else {
-    mine.add(emoji);
-    counts[emoji] = (counts[emoji] || 0) + 1;
+    // store a simple marker
+    await env.REACTIONS_KV.put(mineKey, "1");
+    delta = +1;
   }
 
-  // Save back
-  await env.REACTIONS_KV.put(countsKey, JSON.stringify(counts));
-  await env.REACTIONS_KV.put(mineKey, JSON.stringify([...mine]));
+  // 3) Update count for THIS emoji only
+  // (still read->write, but now it can't overwrite other emojis’ counts)
+  const rawCount = await env.REACTIONS_KV.get(countKey);
+  const current = Math.max(0, Number(rawCount) || 0);
+  const next = Math.max(0, current + delta);
+  await env.REACTIONS_KV.put(countKey, String(next));
 
-  return json({ counts, mine: [...mine] });
+  // 4) Return fresh full state for UI (3 emojis = cheap)
+  const [counts, mine] = await Promise.all([
+    getCounts(env, postId),
+    getMine(env, postId, userId),
+  ]);
+
+  return json({ counts, mine }, 200, {
+    "Cache-Control": "no-store",
+  });
 }
 
-function json(data, status = 200) {
+function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...extraHeaders,
+    },
   });
 }
 
 const ALLOWED = ["❤", "👍", "🔥"];
 
 async function getCounts(env, postId) {
-  const key = `r:counts:${postId}`;
-  const raw = await env.REACTIONS_KV.get(key);
   const base = { "❤": 0, "👍": 0, "🔥": 0 };
-  if (!raw) return base;
-  try {
-    const parsed = JSON.parse(raw);
-    for (const e of ALLOWED) {
-      if (Number.isFinite(Number(parsed?.[e]))) base[e] = Number(parsed[e]);
-    }
-    return base;
-  } catch {
-    return base;
-  }
+
+  const keys = ALLOWED.map((e) => `r:count:${postId}:${e}`);
+  const raws = await Promise.all(keys.map((k) => env.REACTIONS_KV.get(k)));
+
+  ALLOWED.forEach((e, i) => {
+    const n = Number(raws[i]);
+    if (Number.isFinite(n) && n >= 0) base[e] = Math.floor(n);
+  });
+
+  return base;
 }
 
 async function getMine(env, postId, userId) {
-  const key = `r:mine:${postId}:${userId}`;
-  const raw = await env.REACTIONS_KV.get(key);
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed.filter(e => ALLOWED.includes(e));
-    return [];
-  } catch {
-    return [];
-  }
+  const keys = ALLOWED.map((e) => `r:mine:${postId}:${userId}:${e}`);
+  const raws = await Promise.all(keys.map((k) => env.REACTIONS_KV.get(k)));
+
+  const mine = [];
+  ALLOWED.forEach((e, i) => {
+    if (raws[i]) mine.push(e);
+  });
+
+  return mine;
 }
