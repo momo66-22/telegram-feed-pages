@@ -4,7 +4,7 @@ const CONFIG = {
   channelTitle: "MEDIA",                  // header title (ALL CAPS)
   defaultGroupTitle: "Media",             // label shown on every post bubble (top-left)
   avatarUrl: "https://picsum.photos/200", // replace with your avatar image URL
-  fallbackBackUrl: "/",            // used if there's no browser history
+  fallbackBackUrl: "/",                   // used if there's no browser history
   reactions: ["❤", "👍", "🔥"],
 };
 
@@ -88,6 +88,7 @@ function escapeHtml(str) {
     "'": "&#39;",
   }[ch]));
 }
+
 function renderCaption(md) {
   const s = escapeHtml(md || "");
   let out = s
@@ -165,6 +166,7 @@ function lockBodyScroll() {
   document.body.classList.add("no-scroll");
   document.body.style.top = `-${_lockedScrollY}px`;
 }
+
 function unlockBodyScroll() {
   if (!document.body.classList.contains("no-scroll")) return;
   document.body.classList.remove("no-scroll");
@@ -413,125 +415,191 @@ function renderCollage(media) {
 }
 
 // -----------------------
-// API helpers
+// API helpers (no-store + timeout)
 // -----------------------
+async function fetchWithTimeout(url, options = {}, ms = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 async function apiGetReactions(postId) {
   const u = new URL("/api/reactions", location.origin);
   u.searchParams.set("post_id", postId);
   u.searchParams.set("user_id", USER_ID);
-  const res = await fetch(u.toString(), { headers: { Accept: "application/json" } });
+
+  const res = await fetchWithTimeout(u.toString(), {
+    method: "GET",
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+  }, 8000);
+
   if (!res.ok) throw new Error("reactions GET failed");
   return res.json();
 }
 
 async function apiToggleReaction(postId, emoji) {
-  const res = await fetch("/api/reactions/toggle", {
+  const res = await fetchWithTimeout("/api/reactions/toggle", {
     method: "POST",
+    cache: "no-store",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ post_id: postId, emoji, user_id: USER_ID }),
-  });
+  }, 8000);
+
   if (!res.ok) throw new Error("reactions toggle failed");
   return res.json();
 }
 
 async function apiSeenView(postId) {
-  const res = await fetch("/api/views/seen", {
+  const res = await fetchWithTimeout("/api/views/seen", {
     method: "POST",
+    cache: "no-store",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ post_id: postId, user_id: USER_ID }),
-  });
+  }, 8000);
+
   if (!res.ok) return null;
   return res.json();
 }
 
 // -----------------------
-// Reactions controller (fixes spam-click race)
-// - optimistic UI (feels instant)
-// - queue per post (only 1 request at a time)
+// Reactions controller (stronger anti-spam)
+// - optimistic UI (instant)
+// - never overlaps requests per post
+// - coalesces spam clicks into a "desired state"
+// - keeps UI consistent while responses arrive
 // -----------------------
 function createReactionController(postId, pillEls) {
-  const baseCounts = { "❤": 0, "👍": 0, "🔥": 0 };
+  // Build base counts from CONFIG.reactions so it's always in sync
+  const baseCounts = Object.fromEntries(CONFIG.reactions.map((e) => [e, 0]));
 
-  let counts = { ...baseCounts };
-  let mine = new Set();
-  let hasState = false;
+  let serverCounts = { ...baseCounts };
+  let serverMine = new Set();
+
+  // parity: 0 = no pending toggle, 1 = pending toggle (odd number of clicks)
+  const parity = new Map(CONFIG.reactions.map((e) => [e, 0]));
 
   let inflight = false;
-  const queue = [];
 
-  function syncUI() {
-    applyReactionsState(pillEls, { counts, mine: [...mine] });
-  }
-
-  function setFromServer(data) {
+  function sanitizeServer(data) {
     const c = data?.counts || {};
     const m = data?.mine || [];
 
-    // keep only known emojis, keep numbers
-    const next = { ...baseCounts };
+    const nextCounts = { ...baseCounts };
     for (const e of Object.keys(baseCounts)) {
       const v = Number(c?.[e] ?? 0);
-      next[e] = Number.isFinite(v) ? v : 0;
+      nextCounts[e] = Number.isFinite(v) ? Math.max(0, v) : 0;
     }
-    counts = next;
-    mine = new Set(Array.isArray(m) ? m : []);
-    hasState = true;
+
+    const nextMine = new Set(Array.isArray(m) ? m.filter((e) => e in baseCounts) : []);
+    return { counts: nextCounts, mine: nextMine };
+  }
+
+  function derive() {
+    const counts = { ...serverCounts };
+    const mine = new Set(serverMine);
+
+    for (const e of Object.keys(baseCounts)) {
+      const p = parity.get(e) || 0;
+      if (p % 2 === 0) continue;
+
+      const cur = Number(counts[e] ?? 0);
+
+      if (mine.has(e)) {
+        mine.delete(e);
+        counts[e] = Math.max(0, cur - 1);
+      } else {
+        mine.add(e);
+        counts[e] = cur + 1;
+      }
+    }
+
+    return { counts, mine };
+  }
+
+  function pendingSet() {
+    const s = new Set();
+    for (const e of Object.keys(baseCounts)) {
+      if ((parity.get(e) || 0) % 2 === 1) s.add(e);
+    }
+    return s;
+  }
+
+  function syncUI() {
+    const d = derive();
+    applyReactionsState(pillEls, { counts: d.counts, mine: [...d.mine] }, pendingSet(), inflight);
+  }
+
+  function setFromServer(data) {
+    const clean = sanitizeServer(data);
+    serverCounts = clean.counts;
+    serverMine = clean.mine;
+    // IMPORTANT: keep parity (pending user clicks) as-is
     syncUI();
   }
 
-  function optimisticToggle(emoji) {
-    if (!hasState) hasState = true;
-    const cur = Number(counts[emoji] ?? 0);
-
-    if (mine.has(emoji)) {
-      mine.delete(emoji);
-      counts[emoji] = Math.max(0, cur - 1);
-    } else {
-      mine.add(emoji);
-      counts[emoji] = cur + 1;
-    }
+  function click(emoji) {
+    if (!(emoji in baseCounts)) return;
+    parity.set(emoji, ((parity.get(emoji) || 0) + 1) % 2); // toggle parity
     syncUI();
+    flush();
   }
 
-  async function pump() {
+  async function flush() {
     if (inflight) return;
-    if (queue.length === 0) return;
+
+    // any pending?
+    const hasPending = Object.keys(baseCounts).some((e) => (parity.get(e) || 0) % 2 === 1);
+    if (!hasPending) return;
 
     inflight = true;
+    syncUI();
+
     try {
-      while (queue.length) {
-        const emoji = queue.shift();
+      // Process in a stable order (CONFIG.reactions)
+      for (const emoji of Object.keys(baseCounts)) {
+        if ((parity.get(emoji) || 0) % 2 === 0) continue;
+
         const data = await apiToggleReaction(postId, emoji);
-        setFromServer(data);
+
+        // server truth after this toggle
+        const clean = sanitizeServer(data);
+        serverCounts = clean.counts;
+        serverMine = clean.mine;
+
+        // this emoji's pending toggle has now been applied on server
+        parity.set(emoji, 0);
+
+        // update UI showing remaining pending toggles still applied on top
+        syncUI();
       }
     } catch (e) {
       console.warn(e);
-      // If anything went wrong, snap back to server truth once.
+
+      // Snap back to server truth once, but keep parity (user intent)
       try {
         const fresh = await apiGetReactions(postId);
-        setFromServer(fresh);
+        const clean = sanitizeServer(fresh);
+        serverCounts = clean.counts;
+        serverMine = clean.mine;
       } catch {}
-      queue.length = 0;
+
+      syncUI();
     } finally {
       inflight = false;
+      syncUI();
+
+      // In case user clicked during inflight and left parity pending, run again.
+      const stillPending = Object.keys(baseCounts).some((e) => (parity.get(e) || 0) % 2 === 1);
+      if (stillPending) flush();
     }
   }
 
-  function enqueue(emoji) {
-    // If they click the SAME emoji twice quickly while it’s still queued,
-    // cancel it out (toggle twice = no net change).
-    if (queue.length > 0 && queue[queue.length - 1] === emoji) {
-      queue.pop();
-      optimisticToggle(emoji); // revert the optimistic change
-      return;
-    }
-
-    optimisticToggle(emoji);
-    queue.push(emoji);
-    pump();
-  }
-
-  return { enqueue, setFromServer };
+  return { click, setFromServer };
 }
 
 // -----------------------
@@ -575,11 +643,7 @@ function makePostEl(post) {
     pill.dataset.emoji = emoji;
     pill.innerHTML = `<span class="emoji">${emoji}</span><span class="count">0</span>`;
 
-    // IMPORTANT: don’t fire overlapping requests.
-    // We queue them per-post + update UI instantly.
-    pill.addEventListener("click", () => {
-      rx.enqueue(emoji);
-    });
+    pill.addEventListener("click", () => rx.click(emoji));
 
     pillEls.set(emoji, pill);
     reactions.appendChild(pill);
@@ -597,7 +661,7 @@ function makePostEl(post) {
 
   bubble.appendChild(inner);
 
-  // Fetch & apply reactions (server truth)
+  // Fetch & apply reactions (server truth) — parity clicks stay applied on top
   apiGetReactions(postId)
     .then((data) => rx.setFromServer(data))
     .catch(() => {});
@@ -612,14 +676,24 @@ function makePostEl(post) {
   return bubble;
 }
 
-function applyReactionsState(pillEls, data) {
+function applyReactionsState(pillEls, data, pending = new Set(), inflight = false) {
   const counts = data?.counts || {};
   const mine = new Set(data?.mine || []);
+
   for (const [emoji, pill] of pillEls.entries()) {
     const c = counts[emoji] ?? 0;
-    pill.querySelector(".count").textContent = formatCompact(c);
+    const countEl = pill.querySelector(".count");
+    if (countEl) countEl.textContent = formatCompact(c);
+
     if (mine.has(emoji)) pill.classList.add("pill--selected");
     else pill.classList.remove("pill--selected");
+
+    // Optional: if you add CSS later, these will show "pending" state
+    if (pending.has(emoji)) pill.classList.add("pill--pending");
+    else pill.classList.remove("pill--pending");
+
+    if (inflight) pill.classList.add("pill--inflight");
+    else pill.classList.remove("pill--inflight");
   }
 }
 
@@ -627,7 +701,7 @@ function applyReactionsState(pillEls, data) {
 // Load posts (Option A or B both produce posts.json)
 // -----------------------
 async function loadPosts() {
-  const res = await fetch(assetUrl("posts.json") + `?cb=${Date.now()}`);
+  const res = await fetch(assetUrl("posts.json") + `?cb=${Date.now()}`, { cache: "no-store" });
   if (!res.ok) throw new Error("posts.json missing");
   const posts = await res.json();
   posts.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
