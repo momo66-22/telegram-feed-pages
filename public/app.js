@@ -4,8 +4,16 @@ const CONFIG = {
   channelTitle: "MEDIA",                  // header title (ALL CAPS)
   defaultGroupTitle: "Media",             // label shown on every post bubble (top-left)
   avatarUrl: "https://picsum.photos/200", // replace with your avatar image URL
-  fallbackBackUrl: "/",            // used if there's no browser history
+  fallbackBackUrl: "/",                   // used if there's no browser history
   reactions: ["❤", "👍", "🔥"],
+
+  // Live-ish reactions (polling)
+  liveReactions: true,
+  liveReactionsIntervalMs: 3000, // refresh interval (ms)
+
+  // Live-ish views (polling)
+  liveViews: true,
+  liveViewsIntervalMs: 5000, // refresh interval (ms)
 };
 
 const feedEl = document.getElementById("feed");
@@ -47,84 +55,6 @@ function getUserId() {
 const USER_ID = getUserId();
 
 // -----------------------
-// Live refresh (polling)
-// -----------------------
-// We only refresh posts that are currently on-screen to keep traffic reasonable.
-const ACTIVE_POSTS = new Set();              // postIds currently intersecting viewport
-const SEEN_POSTS = new Set();                // postIds that have been marked seen (safe to re-hit /views/seen fallback)
-const REACTION_CONTROLLERS = new Map();      // postId -> reaction controller
-const VIEW_UPDATERS = new Map();             // postId -> (views:number)=>void
-
-const LIVE_REFRESH_MS = 4000;                // "every few seconds"
-const MAX_LIVE_POSTS = 10;                   // cap per tick
-let liveTimer = null;
-
-function stopLiveRefresh() {
-  if (liveTimer) clearInterval(liveTimer);
-  liveTimer = null;
-}
-
-function startLiveRefresh() {
-  stopLiveRefresh();
-
-  const tick = () => refreshLive().catch(() => {});
-  tick(); // run once immediately
-
-  liveTimer = setInterval(() => {
-    if (document.hidden) return; // don't waste requests in background tabs
-    tick();
-  }, LIVE_REFRESH_MS);
-}
-
-async function refreshLive() {
-  const ids = Array.from(ACTIVE_POSTS).slice(0, MAX_LIVE_POSTS);
-  if (ids.length === 0) return;
-
-  const tasks = [];
-  for (const postId of ids) {
-    const rx = REACTION_CONTROLLERS.get(postId);
-    if (rx) {
-      tasks.push(
-        apiGetReactions(postId)
-          .then((data) => rx.setFromServer(data))
-          .catch(() => {})
-      );
-    }
-
-    const updateViews = VIEW_UPDATERS.get(postId);
-    if (updateViews) {
-      tasks.push(
-        refreshViewsFor(postId, updateViews).catch(() => {})
-      );
-    }
-  }
-
-  await Promise.all(tasks);
-}
-
-async function refreshViewsFor(postId, updateViews) {
-  // Prefer a read-only endpoint if you add it (recommended).
-  const data = await apiGetViews(postId);
-  if (data?.views != null) {
-    updateViews(data.views);
-    return;
-  }
-
-  // Fallback: re-call /api/views/seen ONLY for posts we've already seen
-  // (should not increment again if your backend de-dupes by user_id).
-  if (!SEEN_POSTS.has(postId)) return;
-
-  const seen = await apiSeenView(postId);
-  if (seen?.views != null) updateViews(seen.views);
-}
-
-// Pause/resume polling when tab visibility changes
-document.addEventListener("visibilitychange", () => {
-  if (document.hidden) stopLiveRefresh();
-  else startLiveRefresh();
-});
-
-// -----------------------
 // Number formatting (1K, 1.2K, 10.5K, 1M…)
 // -----------------------
 function formatCompact(n) {
@@ -153,32 +83,42 @@ function formatTime(ts) {
 }
 
 // -----------------------
-// Captions: safe-ish text formatting
+// Caption rendering (safe, minimal)
+// - escapes HTML
+// - supports **bold**, *italic*, `code`, and [text](url)
 // -----------------------
-function escapeHtml(s) {
-  return String(s || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (ch) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  }[ch]));
 }
 
-function linkify(s) {
-  const text = escapeHtml(s);
-  const urlRe = /(https?:\/\/[^\s<]+)/g;
-  return text.replace(urlRe, (m) => `<a href="${m}" target="_blank" rel="noopener noreferrer">${m}</a>`);
-}
-
-function renderCaption(captionText) {
-  return linkify(captionText).replace(/\n/g, "<br>");
+function renderCaption(md) {
+  const s = escapeHtml(md || "");
+  let out = s
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`(.+?)`/g, "<code>$1</code>")
+    .replace(/\[(.+?)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer noopener">$1</a>');
+  out = out.replace(/\n/g, "<br>");
+  return out;
 }
 
 // -----------------------
 // Groups support
 // -----------------------
+function assetUrl(path) {
+  // Relative to current page (works for /, /public/index.html in Live Server, etc.)
+  return new URL(path, window.location.href).toString();
+}
+
 async function loadGroups() {
   try {
-    const r = await fetch("/groups.json", { cache: "no-store" });
+    const r = await fetch(assetUrl("groups.json"), { cache: "no-store" });
     if (!r.ok) return [];
     const groups = await r.json();
     return Array.isArray(groups) ? groups : [];
@@ -189,173 +129,297 @@ async function loadGroups() {
 
 function getGroupFromUrl(groups) {
   const url = new URL(location.href);
-  const slug = (url.searchParams.get("g") || "").trim().toLowerCase();
+  const slug = (url.searchParams.get("g") || "").trim();
 
-  if (!slug) return { mode: "group", group: groups[0] || null };
-  if (slug === "all") return { mode: "all", group: null };
+  if (!slug) return { mode: "group", group: groups[0] || null, slug: groups[0]?.slug || "" };
+  if (slug.toLowerCase() === "all") return { mode: "all", group: null, slug: "all" };
 
-  const found = groups.find((g) => (g.slug || "").toLowerCase() === slug);
-  return { mode: "group", group: found || groups[0] || null };
+  const found = groups.find((g) => String(g.slug || "").toLowerCase() === slug.toLowerCase());
+  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {}).slug || "" };
 }
 
 function applyGroupToConfig(sel) {
+  // Default behavior if no groups.json or no match
   if (sel.mode === "all") {
     CONFIG.channelTitle = "ALL";
     CONFIG.defaultGroupTitle = "All";
+    // accent stays whatever CSS default is
     return;
   }
   if (!sel.group) return;
 
-  CONFIG.channelTitle = sel.group.channelTitle || (sel.group.title || "").toUpperCase();
+  CONFIG.channelTitle = (sel.group.channelTitle || sel.group.title || CONFIG.channelTitle || "").toUpperCase();
   CONFIG.defaultGroupTitle = sel.group.title || CONFIG.defaultGroupTitle;
   if (sel.group.avatarUrl) CONFIG.avatarUrl = sel.group.avatarUrl;
+  if (sel.group.accent) document.documentElement.style.setProperty("--accent", sel.group.accent);
 }
 
 // -----------------------
-// Collage renderer
+// Lightbox viewer (fixed: no-scroll + arrows + swipe)
 // -----------------------
-function renderCollage(media = []) {
-  const items = Array.isArray(media) ? media : [];
-  if (items.length === 0) return null;
+const lightbox = document.getElementById("lightbox");
+const lbBackdrop = document.getElementById("lbBackdrop");
+const lbClose = document.getElementById("lbClose");
+const lbPrev = document.getElementById("lbPrev");
+const lbNext = document.getElementById("lbNext");
+const lbContent = document.getElementById("lbContent");
+const lbCaption = document.getElementById("lbCaption");
 
-  const wrap = document.createElement("div");
-  wrap.className = "collage";
+const LB_STATE = { media: [], index: 0 };
 
-  // Helper to create rows with a given count split
-  const makeRows = (rowCounts) => {
-    let idx = 0;
-    rowCounts.forEach((count) => {
-      const row = document.createElement("div");
-      row.className = "collage__row";
-      for (let i = 0; i < count; i++) {
-        const m = items[idx++];
-        if (!m) break;
+let _lockedScrollY = 0;
 
-        const cell = document.createElement("button");
-        cell.className = "collage__cell";
-        cell.type = "button";
+function lockBodyScroll() {
+  _lockedScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+  document.body.classList.add("no-scroll");
+  document.body.style.top = `-${_lockedScrollY}px`;
+}
 
-        if (m.type === "video") {
-          const v = document.createElement("video");
-          v.src = m.url;
-          v.muted = true;
-          v.playsInline = true;
-          v.preload = "metadata";
-          v.className = "collage__media";
-          cell.appendChild(v);
-        } else {
-          const img = document.createElement("img");
-          img.src = m.url;
-          img.alt = "";
-          img.loading = "lazy";
-          img.className = "collage__media";
-          cell.appendChild(img);
-        }
+function unlockBodyScroll() {
+  if (!document.body.classList.contains("no-scroll")) return;
+  document.body.classList.remove("no-scroll");
+  document.body.style.top = "";
+  window.scrollTo(0, _lockedScrollY);
+}
 
-        cell.addEventListener("click", () => openLightbox(items, idx - 1));
-        row.appendChild(cell);
-      }
-      wrap.appendChild(row);
+function renderLightbox() {
+  const item = LB_STATE.media[LB_STATE.index];
+  lbContent.innerHTML = "";
+  if (lbCaption) lbCaption.textContent = "";
+
+  if (!item) return;
+
+  const src = item.url || item.thumb_url;
+  if (!src) {
+    lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Missing media URL</div>`;
+    return;
+  }
+
+  if (item.type === "video") {
+    const v = document.createElement("video");
+    v.controls = true;
+    v.playsInline = true;
+    v.preload = "metadata";
+    v.src = src;
+    if (item.thumb_url) v.poster = item.thumb_url;
+
+    v.addEventListener("error", () => {
+      lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Couldn’t load this video.</div>`;
     });
+
+    lbContent.appendChild(v);
+  } else {
+    const img = document.createElement("img");
+    img.alt = item.caption || "";
+    img.loading = "eager";
+    img.decoding = "async";
+    img.src = src;
+
+    img.addEventListener("error", () => {
+      lbContent.innerHTML = `<div style="padding:16px;color:#fff;opacity:.9">Couldn’t load this image.</div>`;
+    });
+
+    lbContent.appendChild(img);
+  }
+
+  if (lbCaption) lbCaption.textContent = item.caption || "";
+
+  const hasMany = LB_STATE.media.length > 1;
+  if (lbPrev) lbPrev.style.display = hasMany ? "" : "none";
+  if (lbNext) lbNext.style.display = hasMany ? "" : "none";
+}
+
+function openLightbox(media, index = 0) {
+  if (!Array.isArray(media) || media.length === 0) return;
+
+  LB_STATE.media = media;
+  LB_STATE.index = Math.max(0, Math.min(index, media.length - 1));
+
+  renderLightbox();
+  lightbox.setAttribute("aria-hidden", "false");
+  lockBodyScroll();
+  lbClose?.focus?.();
+}
+
+function closeLightbox() {
+  lightbox.setAttribute("aria-hidden", "true");
+  lbContent.innerHTML = "";
+  if (lbCaption) lbCaption.textContent = "";
+  unlockBodyScroll();
+}
+
+function step(dir) {
+  const m = LB_STATE.media;
+  if (!m || m.length === 0) return;
+  LB_STATE.index = (LB_STATE.index + dir + m.length) % m.length;
+  renderLightbox();
+}
+
+lbClose?.addEventListener("click", closeLightbox);
+lbBackdrop?.addEventListener("click", closeLightbox);
+lbPrev?.addEventListener("click", () => step(-1));
+lbNext?.addEventListener("click", () => step(1));
+
+document.addEventListener("keydown", (e) => {
+  if (lightbox.getAttribute("aria-hidden") === "true") return;
+  if (e.key === "Escape") closeLightbox();
+  if (e.key === "ArrowLeft") step(-1);
+  if (e.key === "ArrowRight") step(1);
+});
+
+// Swipe support
+let swipe = { active: false, startX: 0, startY: 0 };
+
+lbContent?.addEventListener("pointerdown", (e) => {
+  if (lightbox.getAttribute("aria-hidden") === "true") return;
+  swipe.active = true;
+  swipe.startX = e.clientX;
+  swipe.startY = e.clientY;
+  try { lbContent.setPointerCapture(e.pointerId); } catch {}
+});
+
+lbContent?.addEventListener("pointerup", (e) => {
+  if (!swipe.active) return;
+  swipe.active = false;
+
+  const dx = e.clientX - swipe.startX;
+  const dy = e.clientY - swipe.startY;
+
+  // swipe left/right only if it's mostly horizontal
+  if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2) {
+    step(dx < 0 ? 1 : -1);
+  }
+});
+
+lbContent?.addEventListener("pointercancel", () => { swipe.active = false; });
+
+// -----------------------
+// Collage templates (1–10)
+// -----------------------
+function tileFor(item, onClick, overlayText = null) {
+  const tile = document.createElement("div");
+  tile.className = "tile";
+  tile.tabIndex = 0;
+  tile.setAttribute("role", "button");
+
+  tile.addEventListener("click", onClick);
+  tile.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      onClick();
+    }
+  });
+
+  // Use <img> in the feed for both images and video thumbs (fast).
+  const img = document.createElement("img");
+  img.loading = "lazy";
+  img.decoding = "async";
+
+  if (item.type === "video") {
+    img.src = item.thumb_url || item.url;
+  } else {
+    img.src = item.url;
+  }
+  img.alt = item.caption || "";
+  tile.appendChild(img);
+
+  if (item.type === "video") {
+    const play = document.createElement("div");
+    play.className = "play-badge";
+    play.innerHTML = "<span>▶</span>";
+    tile.appendChild(play);
+  }
+
+  if (overlayText) {
+    const more = document.createElement("div");
+    more.className = "more-badge";
+    more.textContent = overlayText;
+    tile.appendChild(more);
+  }
+
+  return tile;
+}
+
+function renderCollage(media) {
+  if (!Array.isArray(media) || media.length === 0) return null;
+
+  const full = media.slice(0, 10);
+  const overflow = media.length - full.length;
+
+  const openAt = (idx) => openLightbox(media, idx);
+  const n = full.length;
+
+  const makeRows = (rows) => {
+    const collage = document.createElement("div");
+    collage.className = "collage";
+    let cursor = 0;
+
+    rows.forEach((cols) => {
+      const row = document.createElement("div");
+      row.className = `collage-row cols-${cols}`;
+
+      for (let i = 0; i < cols; i++) {
+        const item = full[cursor];
+        if (!item) break;
+
+        const isLastTile = (cursor === full.length - 1) && overflow > 0;
+        const overlay = isLastTile ? `+${overflow}` : null;
+
+        row.appendChild(tileFor(item, () => openAt(cursor), overlay));
+        cursor++;
+      }
+      collage.appendChild(row);
+    });
+
+    return collage;
   };
 
-  const n = items.length;
+  if (n === 1) {
+    const collage = document.createElement("div");
+    collage.className = "collage";
+    collage.style.height = "auto";
 
-  if (n === 1) return makeRows([1]), wrap;
-  if (n === 2) return makeRows([2]), wrap;
-  if (n === 3) return makeRows([3]), wrap;
-  if (n === 4) return makeRows([2, 2]), wrap;
+    const row = document.createElement("div");
+    row.className = "collage-row cols-1";
+    row.style.gridTemplateColumns = "1fr";
+    row.style.height = "var(--collage-h)";
 
-  if (n === 5) return makeRows([2, 3]), wrap;
-  if (n === 6) return makeRows([3, 3]), wrap;
-  if (n === 7) return makeRows([2, 2, 3]), wrap;
-  if (n === 8) return makeRows([2, 3, 3]), wrap;
-  if (n === 9) return makeRows([3, 3, 3]), wrap;
-  if (n === 10) return makeRows([3, 4, 3]), wrap;
+    row.appendChild(tileFor(full[0], () => openAt(0)));
+    collage.appendChild(row);
+    return collage;
+  }
+
+  if (n === 2) return makeRows([2]);
+
+  if (n === 3 || n === 4) {
+    const wrap = document.createElement("div");
+    wrap.className = "collage-split";
+
+    wrap.appendChild(tileFor(full[0], () => openAt(0)));
+
+    const right = document.createElement("div");
+    right.className = "collage-split__right";
+    right.style.gridTemplateRows = `repeat(${n - 1}, 1fr)`;
+
+    for (let i = 1; i < n; i++) {
+      const isLastTile = (i === n - 1) && overflow > 0;
+      const overlay = isLastTile ? `+${overflow}` : null;
+      right.appendChild(tileFor(full[i], () => openAt(i), overlay));
+    }
+
+    wrap.appendChild(right);
+    return wrap;
+  }
+
+  if (n === 5) return makeRows([2, 3]);
+  if (n === 6) return makeRows([3, 3]);
+  if (n === 7) return makeRows([2, 2, 3]);
+  if (n === 8) return makeRows([2, 3, 3]);
+  if (n === 9) return makeRows([3, 3, 3]);
+  if (n === 10) return makeRows([3, 4, 3]);
 
   // Fallback
-  return makeRows([3, 4, 3]), wrap;
-}
-
-// -----------------------
-// Lightbox
-// -----------------------
-let lightboxEl = null;
-
-function ensureLightbox() {
-  if (lightboxEl) return lightboxEl;
-
-  const lb = document.createElement("div");
-  lb.className = "lightbox";
-  lb.innerHTML = `
-    <div class="lightbox__backdrop"></div>
-    <div class="lightbox__content">
-      <button class="lightbox__close" type="button">✕</button>
-      <div class="lightbox__stage"></div>
-      <div class="lightbox__nav">
-        <button class="lightbox__prev" type="button">‹</button>
-        <button class="lightbox__next" type="button">›</button>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(lb);
-
-  const backdrop = lb.querySelector(".lightbox__backdrop");
-  const closeBtn = lb.querySelector(".lightbox__close");
-
-  const close = () => lb.classList.remove("lightbox--open");
-  backdrop?.addEventListener("click", close);
-  closeBtn?.addEventListener("click", close);
-
-  lightboxEl = lb;
-  return lb;
-}
-
-function openLightbox(items, index) {
-  const lb = ensureLightbox();
-  const stage = lb.querySelector(".lightbox__stage");
-  const prev = lb.querySelector(".lightbox__prev");
-  const next = lb.querySelector(".lightbox__next");
-
-  let cur = index;
-
-  const render = () => {
-    const m = items[cur];
-    if (!stage || !m) return;
-    stage.innerHTML = "";
-
-    if (m.type === "video") {
-      const v = document.createElement("video");
-      v.src = m.url;
-      v.controls = true;
-      v.autoplay = true;
-      v.playsInline = true;
-      v.className = "lightbox__media";
-      stage.appendChild(v);
-    } else {
-      const img = document.createElement("img");
-      img.src = m.url;
-      img.alt = "";
-      img.className = "lightbox__media";
-      stage.appendChild(img);
-    }
-  };
-
-  const goPrev = () => {
-    cur = (cur - 1 + items.length) % items.length;
-    render();
-  };
-
-  const goNext = () => {
-    cur = (cur + 1) % items.length;
-    render();
-  };
-
-  prev?.addEventListener("click", goPrev, { once: true });
-  next?.addEventListener("click", goNext, { once: true });
-
-  render();
-  lb.classList.add("lightbox--open");
+  return makeRows([3, 4, 3]);
 }
 
 // -----------------------
@@ -398,21 +462,6 @@ async function apiToggleReaction(postId, emoji) {
   return res.json();
 }
 
-async function apiGetViews(postId) {
-  // Optional endpoint: functions/api/views/index.js (GET /api/views?post_id=...)
-  const u = new URL("/api/views", location.origin);
-  u.searchParams.set("post_id", postId);
-
-  const res = await fetchWithTimeout(u.toString(), {
-    method: "GET",
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-  }, 8000);
-
-  if (!res.ok) return null;
-  return res.json();
-}
-
 async function apiSeenView(postId) {
   const res = await fetchWithTimeout("/api/views/seen", {
     method: "POST",
@@ -423,6 +472,25 @@ async function apiSeenView(postId) {
 
   if (!res.ok) return null;
   return res.json();
+}
+
+// Prefer GET /api/views (if you ever add it). Fallback to POST /api/views/seen.
+async function apiGetViews(postId) {
+  try {
+    const u = new URL("/api/views", location.origin);
+    u.searchParams.set("post_id", postId);
+
+    const res = await fetchWithTimeout(u.toString(), {
+      method: "GET",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    }, 8000);
+
+    if (res.ok) return res.json();
+  } catch {
+    // ignore and fallback
+  }
+  return apiSeenView(postId);
 }
 
 // -----------------------
@@ -451,98 +519,114 @@ function createReactionController(postId, pillEls) {
     const nextCounts = { ...baseCounts };
     for (const e of Object.keys(baseCounts)) {
       const v = Number(c?.[e] ?? 0);
-      nextCounts[e] = Number.isFinite(v) ? v : 0;
+      nextCounts[e] = Number.isFinite(v) ? Math.max(0, v) : 0;
     }
 
-    const nextMine = new Set();
-    if (Array.isArray(m)) {
-      for (const e of m) if (baseCounts[e] !== undefined) nextMine.add(e);
-    }
-
-    serverCounts = nextCounts;
-    serverMine = nextMine;
+    const nextMine = new Set(Array.isArray(m) ? m.filter((e) => e in baseCounts) : []);
+    return { counts: nextCounts, mine: nextMine };
   }
 
-  function buildEffectiveState() {
+  function derive() {
     const counts = { ...serverCounts };
     const mine = new Set(serverMine);
 
-    for (const e of baseCounts ? Object.keys(baseCounts) : CONFIG.reactions) {
-      if ((parity.get(e) || 0) % 2 === 0) continue;
+    for (const e of Object.keys(baseCounts)) {
+      const p = parity.get(e) || 0;
+      if (p % 2 === 0) continue;
 
-      // apply one toggle on top of server truth
+      const cur = Number(counts[e] ?? 0);
+
       if (mine.has(e)) {
         mine.delete(e);
-        counts[e] = Math.max(0, Number(counts[e] || 0) - 1);
+        counts[e] = Math.max(0, cur - 1);
       } else {
         mine.add(e);
-        counts[e] = Number(counts[e] || 0) + 1;
+        counts[e] = cur + 1;
       }
     }
 
     return { counts, mine };
   }
 
+  function pendingSet() {
+    const s = new Set();
+    for (const e of Object.keys(baseCounts)) {
+      if ((parity.get(e) || 0) % 2 === 1) s.add(e);
+    }
+    return s;
+  }
+
   function syncUI() {
-    const effective = buildEffectiveState();
-    const pending = new Set();
-    for (const [e, v] of parity.entries()) if (v % 2 === 1) pending.add(e);
-    applyReactionsState(pillEls, effective, pending, inflight);
+    const d = derive();
+    applyReactionsState(pillEls, { counts: d.counts, mine: [...d.mine] }, pendingSet(), inflight);
   }
 
   function setFromServer(data) {
-    sanitizeServer(data);
+    const clean = sanitizeServer(data);
+    serverCounts = clean.counts;
+    serverMine = clean.mine;
+    // IMPORTANT: keep parity (pending user clicks) as-is
     syncUI();
+  }
+
+  function click(emoji) {
+    if (!(emoji in baseCounts)) return;
+    parity.set(emoji, ((parity.get(emoji) || 0) + 1) % 2); // toggle parity
+    syncUI();
+    flush();
   }
 
   async function flush() {
     if (inflight) return;
 
-    // which emojis have odd parity?
-    const pendingEmojis = [];
-    for (const [e, v] of parity.entries()) {
-      if (v % 2 === 1) pendingEmojis.push(e);
-    }
-    if (pendingEmojis.length === 0) return;
+    // any pending?
+    const hasPending = Object.keys(baseCounts).some((e) => (parity.get(e) || 0) % 2 === 1);
+    if (!hasPending) return;
 
     inflight = true;
     syncUI();
 
     try {
-      // Send toggles sequentially so server state stays consistent.
-      for (const e of pendingEmojis) {
-        const data = await apiToggleReaction(postId, e);
-        // After each response, reset parity for that emoji (we "paid off" one pending toggle)
-        parity.set(e, 0);
-        sanitizeServer(data);
+      // Process in a stable order (CONFIG.reactions)
+      for (const emoji of Object.keys(baseCounts)) {
+        if ((parity.get(emoji) || 0) % 2 === 0) continue;
+
+        const data = await apiToggleReaction(postId, emoji);
+
+        // server truth after this toggle
+        const clean = sanitizeServer(data);
+        serverCounts = clean.counts;
+        serverMine = clean.mine;
+
+        // this emoji's pending toggle has now been applied on server
+        parity.set(emoji, 0);
+
+        // update UI showing remaining pending toggles still applied on top
         syncUI();
       }
-    } catch (err) {
-      console.warn(err);
-      // On failure, snap to truth and clear pending.
+    } catch (e) {
+      console.warn(e);
+
+      // Snap back to server truth once, but keep parity (user intent)
       try {
         const fresh = await apiGetReactions(postId);
-        for (const e of parity.keys()) parity.set(e, 0);
-        setFromServer(fresh);
+        const clean = sanitizeServer(fresh);
+        serverCounts = clean.counts;
+        serverMine = clean.mine;
       } catch {}
+
+      syncUI();
     } finally {
       inflight = false;
       syncUI();
 
-      // If user spam-clicked while inflight, there may be new pending toggles:
-      const stillPending = Array.from(parity.values()).some((v) => v % 2 === 1);
+      // In case user clicked during inflight and left parity pending, run again.
+      const stillPending = Object.keys(baseCounts).some((e) => (parity.get(e) || 0) % 2 === 1);
       if (stillPending) flush();
     }
   }
 
-  function click(emoji) {
-    // flip parity
-    parity.set(emoji, (parity.get(emoji) || 0) + 1);
-    syncUI();
-    flush();
-  }
-
-  return { click, setFromServer, enqueue: click };
+  return { click, setFromServer };
 }
 
 // -----------------------
@@ -579,9 +663,6 @@ function makePostEl(post) {
   const pillEls = new Map();
   const rx = createReactionController(postId, pillEls);
 
-  // register for live refresh
-  REACTION_CONTROLLERS.set(postId, rx);
-
   CONFIG.reactions.forEach((emoji) => {
     const pill = document.createElement("button");
     pill.className = "pill";
@@ -589,11 +670,7 @@ function makePostEl(post) {
     pill.dataset.emoji = emoji;
     pill.innerHTML = `<span class="emoji">${emoji}</span><span class="count">0</span>`;
 
-    // IMPORTANT: don’t fire overlapping requests.
-    // We queue them per-post + update UI instantly.
-    pill.addEventListener("click", () => {
-      rx.enqueue(emoji);
-    });
+    pill.addEventListener("click", () => rx.click(emoji));
 
     pillEls.set(emoji, pill);
     reactions.appendChild(pill);
@@ -611,7 +688,18 @@ function makePostEl(post) {
 
   bubble.appendChild(inner);
 
-  // Fetch & apply reactions (server truth)
+  // Expose controller for live polling
+  bubble._rx = rx;
+  bubble._rxPollInflight = false;
+  bubble._rxPollFail = 0;
+  bubble._rxNextPollAt = 0;
+
+  // Views polling state
+  bubble._vwPollInflight = false;
+  bubble._vwPollFail = 0;
+  bubble._vwNextPollAt = 0;
+
+  // Fetch & apply reactions (server truth) — parity clicks stay applied on top
   apiGetReactions(postId)
     .then((data) => rx.setFromServer(data))
     .catch(() => {});
@@ -622,8 +710,6 @@ function makePostEl(post) {
     const el = bubble.querySelector(".views");
     if (el) el.textContent = formatCompact(v);
   };
-
-  VIEW_UPDATERS.set(postId, bubble._updateViews);
 
   return bubble;
 }
@@ -652,12 +738,6 @@ function applyReactionsState(pillEls, data, pending = new Set(), inflight = fals
 // -----------------------
 // Load posts (Option A or B both produce posts.json)
 // -----------------------
-function assetUrl(path) {
-  // Allows hosting under subpaths without breaking fetches
-  const base = document.querySelector("base")?.href || location.origin + "/";
-  return new URL(path, base).toString();
-}
-
 async function loadPosts() {
   const res = await fetch(assetUrl("posts.json") + `?cb=${Date.now()}`, { cache: "no-store" });
   if (!res.ok) throw new Error("posts.json missing");
@@ -667,35 +747,181 @@ async function loadPosts() {
 }
 
 // -----------------------
-// View observer (+ live-refresh visibility tracking)
+// View observer
 // -----------------------
 const io = new IntersectionObserver(
   async (entries) => {
     for (const e of entries) {
+      if (!e.isIntersecting) continue;
       const el = e.target;
-      const postId = el?.dataset?.postId;
-
-      // Track what's currently on-screen (for live refresh polling)
-      if (postId) {
-        if (e.isIntersecting) ACTIVE_POSTS.add(postId);
-        else ACTIVE_POSTS.delete(postId);
-      }
-
-      // Only count a view when the post is at least 50% visible
-      if (!e.isIntersecting || e.intersectionRatio < 0.5) continue;
-
       if (el._seen) continue;
       el._seen = true;
 
-      if (!postId) continue;
-      SEEN_POSTS.add(postId);
-
+      const postId = el.dataset.postId;
       const data = await apiSeenView(postId);
       if (data?.views != null) el._updateViews(data.views);
     }
   },
-  { threshold: [0, 0.5] }
+  { threshold: 0.5 }
 );
+
+// -----------------------
+// Live-ish reactions polling (visible posts only)
+// -----------------------
+const LIVE_RX = {
+  visible: new Set(),
+  timer: null,
+};
+
+let _VIS_HANDLER_SET = false;
+function ensureVisibilityRefreshHandler() {
+  if (_VIS_HANDLER_SET) return;
+  _VIS_HANDLER_SET = true;
+
+  // When user returns to the tab, refresh immediately
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      pollVisibleReactions({ force: true }).catch(() => {});
+      pollVisibleViews({ force: true }).catch(() => {});
+    }
+  });
+}
+
+const rxPollIO = new IntersectionObserver(
+  (entries) => {
+    for (const e of entries) {
+      const el = e.target;
+      if (e.isIntersecting) LIVE_RX.visible.add(el);
+      else LIVE_RX.visible.delete(el);
+    }
+  },
+  { threshold: 0.15 }
+);
+
+async function pollVisibleReactions({ force = false } = {}) {
+  if (!CONFIG.liveReactions) return;
+  if (document.hidden && !force) return;
+
+  const now = Date.now();
+  const jobs = [];
+
+  for (const el of [...LIVE_RX.visible]) {
+    if (!el || !el.isConnected) {
+      LIVE_RX.visible.delete(el);
+      continue;
+    }
+    if (!el._rx || !el.dataset?.postId) continue;
+
+    if (el._rxPollInflight) continue;
+
+    const nextAt = Number(el._rxNextPollAt || 0);
+    if (!force && nextAt && now < nextAt) continue;
+
+    el._rxPollInflight = true;
+
+    jobs.push(
+      apiGetReactions(el.dataset.postId)
+        .then((data) => {
+          el._rx.setFromServer(data);
+          el._rxPollFail = 0;
+          el._rxNextPollAt = now + CONFIG.liveReactionsIntervalMs;
+        })
+        .catch(() => {
+          el._rxPollFail = (Number(el._rxPollFail) || 0) + 1;
+
+          // backoff: 3s, 6s, 12s, 24s, 30s max
+          const step = Math.min(4, el._rxPollFail);
+          const backoff = Math.min(30000, CONFIG.liveReactionsIntervalMs * Math.pow(2, step));
+          el._rxNextPollAt = now + backoff;
+        })
+        .finally(() => {
+          el._rxPollInflight = false;
+        })
+    );
+  }
+
+  // Let them run in parallel (usually only a few visible posts)
+  if (jobs.length) await Promise.all(jobs);
+}
+
+function startLiveReactionsPolling() {
+  if (!CONFIG.liveReactions) return;
+
+  if (LIVE_RX.timer) clearInterval(LIVE_RX.timer);
+
+  LIVE_RX.timer = setInterval(() => {
+    pollVisibleReactions().catch(() => {});
+  }, CONFIG.liveReactionsIntervalMs);
+
+  ensureVisibilityRefreshHandler();
+}
+
+// -----------------------
+// Live-ish views polling (visible + already-seen posts only)
+// -----------------------
+const LIVE_VW = {
+  timer: null,
+};
+
+async function pollVisibleViews({ force = false } = {}) {
+  if (!CONFIG.liveViews) return;
+  if (document.hidden && !force) return;
+
+  const now = Date.now();
+  const jobs = [];
+
+  for (const el of [...LIVE_RX.visible]) {
+    if (!el || !el.isConnected) {
+      LIVE_RX.visible.delete(el);
+      continue;
+    }
+    if (!el.dataset?.postId || typeof el._updateViews !== "function") continue;
+
+    // IMPORTANT: only poll views after the post was actually "seen" (so we don't inflate views)
+    if (!el._seen) continue;
+
+    if (el._vwPollInflight) continue;
+
+    const nextAt = Number(el._vwNextPollAt || 0);
+    if (!force && nextAt && now < nextAt) continue;
+
+    el._vwPollInflight = true;
+
+    jobs.push(
+      apiGetViews(el.dataset.postId)
+        .then((data) => {
+          if (data?.views != null) el._updateViews(data.views);
+          el._vwPollFail = 0;
+          el._vwNextPollAt = now + CONFIG.liveViewsIntervalMs;
+        })
+        .catch(() => {
+          el._vwPollFail = (Number(el._vwPollFail) || 0) + 1;
+
+          // backoff: 5s, 10s, 20s, 30s max (based on your configured interval)
+          const step = Math.min(3, el._vwPollFail);
+          const backoff = Math.min(30000, CONFIG.liveViewsIntervalMs * Math.pow(2, step));
+          el._vwNextPollAt = now + backoff;
+        })
+        .finally(() => {
+          el._vwPollInflight = false;
+        })
+    );
+  }
+
+  if (jobs.length) await Promise.all(jobs);
+}
+
+function startLiveViewsPolling() {
+  if (!CONFIG.liveViews) return;
+
+  if (LIVE_VW.timer) clearInterval(LIVE_VW.timer);
+
+  LIVE_VW.timer = setInterval(() => {
+    pollVisibleViews().catch(() => {});
+  }, CONFIG.liveViewsIntervalMs);
+
+  ensureVisibilityRefreshHandler();
+}
 
 // -----------------------
 // Main
@@ -737,11 +963,15 @@ async function main() {
     }
     feedEl.appendChild(frag);
 
-    // Attach view observer after render
-    document.querySelectorAll(".post").forEach((el) => io.observe(el));
+    // Attach observers after render
+    document.querySelectorAll(".post").forEach((el) => {
+      io.observe(el);
+      rxPollIO.observe(el);
+    });
 
-    // Live refresh (reactions + views) for on-screen posts
-    startLiveRefresh();
+    // Start polling loops
+    startLiveReactionsPolling();
+    startLiveViewsPolling();
   } catch (err) {
     console.error(err);
     if (loadingEl) loadingEl.textContent = "Missing posts.json or build failed. Run npm run build.";
