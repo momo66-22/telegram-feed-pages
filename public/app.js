@@ -6,6 +6,10 @@ const CONFIG = {
   avatarUrl: "https://picsum.photos/200", // replace with your avatar image URL
   fallbackBackUrl: "/",                   // used if there's no browser history
   reactions: ["❤", "👍", "🔥"],
+
+  // Live-ish reactions (polling)
+  liveReactions: true,
+  liveReactionsIntervalMs: 3000, // refresh interval (ms)
 };
 
 const feedEl = document.getElementById("feed");
@@ -661,6 +665,12 @@ function makePostEl(post) {
 
   bubble.appendChild(inner);
 
+  // Expose controller for live polling
+  bubble._rx = rx;
+  bubble._rxPollInflight = false;
+  bubble._rxPollFail = 0;
+  bubble._rxNextPollAt = 0;
+
   // Fetch & apply reactions (server truth) — parity clicks stay applied on top
   apiGetReactions(postId)
     .then((data) => rx.setFromServer(data))
@@ -728,6 +738,86 @@ const io = new IntersectionObserver(
 );
 
 // -----------------------
+// Live-ish reactions polling (visible posts only)
+// -----------------------
+const LIVE_RX = {
+  visible: new Set(),
+  timer: null,
+};
+
+const rxPollIO = new IntersectionObserver(
+  (entries) => {
+    for (const e of entries) {
+      const el = e.target;
+      if (e.isIntersecting) LIVE_RX.visible.add(el);
+      else LIVE_RX.visible.delete(el);
+    }
+  },
+  { threshold: 0.15 }
+);
+
+async function pollVisibleReactions({ force = false } = {}) {
+  if (!CONFIG.liveReactions) return;
+  if (document.hidden && !force) return;
+
+  const now = Date.now();
+  const jobs = [];
+
+  for (const el of [...LIVE_RX.visible]) {
+    if (!el || !el.isConnected) {
+      LIVE_RX.visible.delete(el);
+      continue;
+    }
+    if (!el._rx || !el.dataset?.postId) continue;
+
+    if (el._rxPollInflight) continue;
+
+    const nextAt = Number(el._rxNextPollAt || 0);
+    if (!force && nextAt && now < nextAt) continue;
+
+    el._rxPollInflight = true;
+
+    jobs.push(
+      apiGetReactions(el.dataset.postId)
+        .then((data) => {
+          el._rx.setFromServer(data);
+          el._rxPollFail = 0;
+          el._rxNextPollAt = now + CONFIG.liveReactionsIntervalMs;
+        })
+        .catch(() => {
+          el._rxPollFail = (Number(el._rxPollFail) || 0) + 1;
+
+          // backoff: 3s, 6s, 12s, 24s, 30s max
+          const step = Math.min(4, el._rxPollFail);
+          const backoff = Math.min(30000, CONFIG.liveReactionsIntervalMs * Math.pow(2, step));
+          el._rxNextPollAt = now + backoff;
+        })
+        .finally(() => {
+          el._rxPollInflight = false;
+        })
+    );
+  }
+
+  // Let them run in parallel (usually only a few visible posts)
+  if (jobs.length) await Promise.all(jobs);
+}
+
+function startLiveReactionsPolling() {
+  if (!CONFIG.liveReactions) return;
+
+  if (LIVE_RX.timer) clearInterval(LIVE_RX.timer);
+
+  LIVE_RX.timer = setInterval(() => {
+    pollVisibleReactions().catch(() => {});
+  }, CONFIG.liveReactionsIntervalMs);
+
+  // When user returns to the tab, refresh immediately
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) pollVisibleReactions({ force: true }).catch(() => {});
+  });
+}
+
+// -----------------------
 // Main
 // -----------------------
 async function main() {
@@ -767,8 +857,14 @@ async function main() {
     }
     feedEl.appendChild(frag);
 
-    // Attach view observer after render
-    document.querySelectorAll(".post").forEach((el) => io.observe(el));
+    // Attach observers after render
+    document.querySelectorAll(".post").forEach((el) => {
+      io.observe(el);
+      rxPollIO.observe(el);
+    });
+
+    // Start reactions polling
+    startLiveReactionsPolling();
   } catch (err) {
     console.error(err);
     if (loadingEl) loadingEl.textContent = "Missing posts.json or build failed. Run npm run build.";
