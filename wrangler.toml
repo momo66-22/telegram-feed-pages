@@ -6,3 +6,8 @@ compatibility_date = "2026-01-03"
 binding = "REACTIONS_KV"
 id = "d2663247942d4a17b2f5514d7340401b"
 preview_id = "d2663247942d4a17b2f5514d7340401b"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "telegram_feed_db"
+database_id = "15cfc4dd-0cfd-4ea2-baaf-2f7a7c3b50dc"
