@@ -1,142 +1,170 @@
+// functions/api/referrals/status.js
+// Returns invite progress + unlocked status for a visitor in a group.
+
 function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
+  return new Response(JSON.stringify(data, null, 2), {
     status,
     headers: { "Content-Type": "application/json; charset=utf-8" },
   });
 }
 
 function safeId(x) {
+  // allow 1..80 of a-z A-Z 0-9 _ -
   const s = String(x || "").trim();
   if (!s) return "";
-  if (s.length > 128) return "";
+  if (!/^[a-zA-Z0-9_-]{1,80}$/.test(s)) return "";
   return s;
 }
 
 function safeSlug(x) {
+  // allow 1..80 of a-z A-Z 0-9 _ - + (you need + for your locked slugs)
   const s = String(x || "").trim();
   if (!s) return "";
-  if (s.length > 80) return "";
+  if (!/^[a-zA-Z0-9_+\-]{1,80}$/.test(s)) return "";
   return s;
+}
+
+function getGroupSlugFromRequest(request) {
+  const u = new URL(request.url);
+
+  // Prefer explicit query (most reliable)
+  const qp =
+    u.searchParams.get("group") ||
+    u.searchParams.get("g") ||
+    u.searchParams.get("slug") ||
+    "";
+  const fromQuery = safeSlug(qp);
+  if (fromQuery) return fromQuery;
+
+  // Fallback: try Referer path like https://site.com/+93OGk
+  const ref = request.headers.get("referer") || "";
+  try {
+    const ru = new URL(ref);
+    const path = decodeURIComponent(ru.pathname || "/");
+    // take first non-empty segment
+    const seg = path.split("/").filter(Boolean)[0] || "";
+    const fromRef = safeSlug(seg);
+    if (fromRef) return fromRef;
+  } catch {}
+
+  return "";
+}
+
+function genInviteCode() {
+  // short-ish random code (uppercase letters+digits)
+  const bytes = new Uint8Array(9);
+  crypto.getRandomValues(bytes);
+  const raw = Array.from(bytes, (b) => (b % 36).toString(36)).join("");
+  return raw.toUpperCase();
+}
+
+async function getGroup(env, groupSlugLc) {
+  return env.DB.prepare(
+    `SELECT slug, slug_lc, type, title, description, icon_url, invites_needed, feed_path, gate_path
+     FROM groups
+     WHERE slug_lc = ?1
+     LIMIT 1`
+  )
+    .bind(groupSlugLc)
+    .first();
+}
+
+async function getOrCreateMyCode(env, groupSlugLc, visitorId) {
+  const existing = await env.DB.prepare(
+    `SELECT code FROM referral_codes WHERE group_slug_lc = ?1 AND visitor_id = ?2 LIMIT 1`
+  )
+    .bind(groupSlugLc, visitorId)
+    .first();
+
+  if (existing?.code) return String(existing.code);
+
+  // Create new
+  for (let i = 0; i < 5; i++) {
+    const code = genInviteCode();
+    try {
+      await env.DB.prepare(
+        `INSERT INTO referral_codes (group_slug_lc, visitor_id, code, created_at)
+         VALUES (?1, ?2, ?3, ?4)`
+      )
+        .bind(groupSlugLc, visitorId, code, Date.now())
+        .run();
+      return code;
+    } catch {
+      // if UNIQUE(code) collides, retry
+    }
+  }
+
+  // As a last resort (super unlikely)
+  const code = genInviteCode() + genInviteCode();
+  await env.DB.prepare(
+    `INSERT INTO referral_codes (group_slug_lc, visitor_id, code, created_at)
+     VALUES (?1, ?2, ?3, ?4)`
+  )
+    .bind(groupSlugLc, visitorId, code, Date.now())
+    .run();
+
+  return code;
+}
+
+async function countCredits(env, groupSlugLc, creditedCode) {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n FROM referral_claims WHERE group_slug_lc = ?1 AND credited_code = ?2`
+  )
+    .bind(groupSlugLc, creditedCode)
+    .first();
+
+  return Number(row?.n || 0);
 }
 
 export async function onRequestGet({ request, env }) {
   try {
-    const url = new URL(request.url);
-    const visitor_id = safeId(url.searchParams.get("visitor_id"));
-    const group_slug = safeSlug(url.searchParams.get("group_slug"));
-    if (!visitor_id) return json({ error: "missing_visitor_id" }, 400);
-    if (!group_slug) return json({ error: "missing_group_slug" }, 400);
-
-    const slug_lc = group_slug.toLowerCase();
-
-    const group = await env.DB.prepare(
-      `SELECT slug, slug_lc, type, title, invites_needed FROM groups WHERE slug_lc = ?`
-    )
-      .bind(slug_lc)
-      .first();
-
-    if (!group) return json({ error: "group_not_found" }, 404);
-
-    // If free group, it's always unlocked
-    if (group.type === "free") {
-      return json({
-        group,
-        invite_count: 0,
-        unlocked: true,
-      });
+    const groupSlug = getGroupSlugFromRequest(request);
+    if (!groupSlug) {
+      return json(
+        { ok: false, error: "Missing group slug. Provide ?group=YOUR_SLUG or open the group page first." },
+        400
+      );
     }
 
-    // Find this visitor's code (if any)
-    const codeRow = await env.DB.prepare(
-      `SELECT code FROM referral_codes WHERE group_slug_lc = ? AND visitor_id = ?`
-    )
-      .bind(slug_lc, visitor_id)
-      .first();
-
-    const myCode = codeRow?.code || null;
-
-    // If no code yet, invites = 0
-    if (!myCode) {
-      return json({
-        group,
-        my_code: null,
-        invite_count: 0,
-        unlocked: false,
-      });
+    const visitorId = safeId(new URL(request.url).searchParams.get("visitor_id"));
+    if (!visitorId) {
+      return json(
+        { ok: false, error: "Missing visitor_id (client must send visitor_id)." },
+        400
+      );
     }
 
-    const cntRow = await env.DB.prepare(
-      `SELECT COUNT(*) AS c
-       FROM referral_claims
-       WHERE group_slug_lc = ? AND credited_code = ?`
-    )
-      .bind(slug_lc, myCode)
-      .first();
+    const groupSlugLc = groupSlug.toLowerCase();
+    const group = await getGroup(env, groupSlugLc);
 
-    const invite_count = Number(cntRow?.c || 0);
-    const unlocked = invite_count >= Number(group.invites_needed || 0);
+    if (!group) {
+      return json({ ok: false, error: "Group not found in DB", group: groupSlug }, 404);
+    }
+
+    const myCode = await getOrCreateMyCode(env, groupSlugLc, visitorId);
+
+    const invitesNeeded = Number(group.invites_needed || 0);
+    const invitesEarned = await countCredits(env, groupSlugLc, myCode);
+
+    const unlocked =
+      String(group.type) === "free" ? true : invitesEarned >= invitesNeeded;
 
     return json({
-      group,
-      my_code: myCode,
-      invite_count,
+      ok: true,
+      group: {
+        slug: group.slug,
+        type: group.type,
+        title: group.title,
+        invites_needed: invitesNeeded,
+        feed_path: group.feed_path,
+        gate_path: group.gate_path,
+      },
+      visitor_id: visitorId,
+      code: myCode,
+      invites_earned: invitesEarned,
       unlocked,
     });
-  } catch (e) {
-    return json({ error: "status_failed" }, 500);
-  }
-}
-
-- functions/api/referrals/summary.js
-function json(data, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "Content-Type": "application/json; charset=utf-8" },
-  });
-}
-
-function safeId(x) {
-  const s = String(x || "").trim();
-  if (!s) return "";
-  if (s.length > 128) return "";
-  return s;
-}
-
-export async function onRequestGet({ request, env }) {
-  try {
-    const url = new URL(request.url);
-    const visitor_id = safeId(url.searchParams.get("visitor_id"));
-    if (!visitor_id) return json({ error: "missing_visitor_id" }, 400);
-
-    // Compute invite counts per group for this visitor (only if they have a code)
-    const rows = await env.DB.prepare(
-      `
-      SELECT
-        g.slug, g.slug_lc, g.type, g.title, g.description, g.icon_url, g.invites_needed, g.feed_path, g.gate_path,
-        COALESCE(cnt.invite_count, 0) AS invite_count,
-        CASE
-          WHEN g.type = 'invite' AND COALESCE(cnt.invite_count, 0) >= g.invites_needed THEN 1
-          ELSE 0
-        END AS unlocked
-      FROM groups g
-      LEFT JOIN (
-        SELECT rc.group_slug_lc AS group_slug_lc, COUNT(*) AS invite_count
-        FROM referral_claims cl
-        JOIN referral_codes rc
-          ON rc.code = cl.credited_code
-         AND rc.group_slug_lc = cl.group_slug_lc
-        WHERE rc.visitor_id = ?
-        GROUP BY rc.group_slug_lc
-      ) cnt
-      ON cnt.group_slug_lc = g.slug_lc
-      ORDER BY CASE g.type WHEN 'free' THEN 0 ELSE 1 END, g.title ASC
-      `
-    )
-      .bind(visitor_id)
-      .all();
-
-    return json({ groups: rows.results || [] });
-  } catch (e) {
-    return json({ error: "summary_failed" }, 500);
+  } catch (err) {
+    return json({ ok: false, error: "status_failed", details: String(err?.message || err) }, 500);
   }
 }
