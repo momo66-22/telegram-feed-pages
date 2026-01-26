@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Group</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- GATE UI -->
+  <main id="gate" class="gate-wrap">
+    <div class="gate-card">
+      <div class="gate-title" id="gateTitle">Loading…</div>
+      <div class="gate-sub" id="gateSub">Invite people to unlock.</div>
+
+      <div class="progress">
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <div class="progress-text" id="progressText">0/0</div>
+      </div>
+
+      <button id="shareBtn" class="btn btn-share" type="button">Share</button>
+      <a href="/" class="gate-more">More Groups</a>
+
+      <div class="gate-note" id="gateNote"></div>
+    </div>
+  </main>
+
+  <!-- FEED UI (hidden until unlocked) -->
+  <div id="feedPage" style="display:none;">
+    <!-- Your existing feed HTML needs these IDs -->
+    <header class="feed-header">
+      <button id="backBtn" class="back-btn" type="button">←</button>
+      <div class="feed-head">
+        <div id="channelTitle" class="channel-title">MEDIA</div>
+      </div>
+      <img id="avatarImg" class="avatar" alt="Avatar" />
+    </header>
+
+    <div id="loading" class="loading">Loading…</div>
+    <main id="feed" class="feed"></main>
+
+    <!-- Lightbox (needed by app.js) -->
+    <div id="lightbox" class="lightbox" aria-hidden="true">
+      <div id="lbBackdrop" class="lb-backdrop"></div>
+      <div class="lb-shell" role="dialog" aria-modal="true">
+        <button id="lbClose" class="lb-close" type="button">✕</button>
+        <button id="lbPrev" class="lb-nav lb-prev" type="button">‹</button>
+        <button id="lbNext" class="lb-nav lb-next" type="button">›</button>
+        <div id="lbContent" class="lb-content"></div>
+        <div id="lbCaption" class="lb-caption"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/group.js"></script>
+</body>
+</html>

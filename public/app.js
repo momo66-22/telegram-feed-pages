@@ -112,11 +112,26 @@ function renderCaption(md) {
 // Groups support
 // -----------------------
 function assetUrl(path) {
-  // Relative to current page (works for /, /public/index.html in Live Server, etc.)
-  return new URL(path, window.location.href).toString();
+  // Always load static assets from the site root (important when the page is on /+slug)
+  const p = String(path || "");
+  const clean = p.startsWith("/") ? p : "/" + p;
+  return new URL(clean, window.location.origin).toString();
 }
 
 async function loadGroups() {
+  // Preferred: D1-backed groups list (works in production)
+  try {
+    const r = await fetch(new URL("/api/groups", window.location.origin), { cache: "no-store" });
+    if (r.ok) {
+      const data = await r.json();
+      const groups = Array.isArray(data) ? data : (data && Array.isArray(data.groups) ? data.groups : []);
+      if (groups.length) return groups;
+    }
+  } catch (e) {
+    // ignore, fallback below
+  }
+
+  // Fallback: static groups.json (older/local setups)
   try {
     const r = await fetch(assetUrl("groups.json"), { cache: "no-store" });
     if (!r.ok) return [];
@@ -128,14 +143,36 @@ async function loadGroups() {
 }
 
 function getGroupFromUrl(groups) {
-  const url = new URL(location.href);
-  const slug = (url.searchParams.get("g") || "").trim();
+  const url = new URL(window.location.href);
 
-  if (!slug) return { mode: "group", group: groups[0] || null, slug: groups[0]?.slug || "" };
-  if (slug.toLowerCase() === "all") return { mode: "all", group: null, slug: "all" };
+  // Back-compat: allow ?g=media or ?g=all
+  const q = (url.searchParams.get("g") || "").trim();
 
-  const found = groups.find((g) => String(g.slug || "").toLowerCase() === slug.toLowerCase());
-  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {}).slug || "" };
+  // Path routing: /+93OGk or /media
+  const path = decodeURIComponent(url.pathname || "/");
+  let slug = "";
+  if (path && path !== "/" && path !== "/index.html" && path !== "/group.html") {
+    slug = path.replace(/^\/+/, "");
+  } else if (q) {
+    slug = q;
+  }
+
+  if (!slug) {
+    return { mode: "group", group: groups[0] || null, slug: (groups[0]?.slug || "") };
+  }
+  if (slug.toLowerCase() === "all") {
+    return { mode: "all", group: null, slug: "all" };
+  }
+
+  const slugLc = slug.toLowerCase();
+  const found = groups.find(g => String(g.slug_lc || g.slug || "").toLowerCase() === slugLc);
+  const chosen = found || groups[0] || null;
+  return {
+    mode: "group",
+    group: chosen,
+    // Use canonical slug from DB if we have it (preserves original casing)
+    slug: String((chosen && chosen.slug) ? chosen.slug : slug)
+  };
 }
 
 function applyGroupToConfig(sel) {
@@ -150,7 +187,9 @@ function applyGroupToConfig(sel) {
 
   CONFIG.channelTitle = (sel.group.channelTitle || sel.group.title || CONFIG.channelTitle || "").toUpperCase();
   CONFIG.defaultGroupTitle = sel.group.title || CONFIG.defaultGroupTitle;
-  if (sel.group.avatarUrl) CONFIG.avatarUrl = sel.group.avatarUrl;
+  if (sel.group.avatar_url) CONFIG.avatarUrl = sel.group.avatar_url;
+if (sel.group.icon_url && !CONFIG.avatarUrl) CONFIG.avatarUrl = sel.group.icon_url;
+if (sel.group.avatarUrl) CONFIG.avatarUrl = sel.group.avatarUrl;
   if (sel.group.accent) document.documentElement.style.setProperty("--accent", sel.group.accent);
 }
 
