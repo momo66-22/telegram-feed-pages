@@ -4,29 +4,43 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Groups</title>
-  <link rel="stylesheet" href="/styles.css" />
+  <link rel="stylesheet" href="/assets/site.css" />
 </head>
 <body>
-  <header class="page-header">
-    <div class="page-title">Groups</div>
-    <div class="page-sub">Free + Invite unlock</div>
-  </header>
 
-  <main class="wrap">
-    <section>
-      <h2 class="section-title">🔥 Free To Join</h2>
-      <div id="freeGroups" class="grid"></div>
-    </section>
+  <!-- Top pill nav (matches your reference UI) -->
+  <div class="nav-wrap">
+    <div class="nav-pill">
+      <a class="nav-item" href="/">Home</a>
+      <a class="nav-item active" href="/">Groups</a>
+      <a class="nav-item" href="#">Shop</a>
+    </div>
+  </div>
+
+  <!-- Optional “live” pill (hidden until we have something to show) -->
+  <div class="live-wrap" id="liveWrap" style="display:none;">
+    <div class="live-pill">
+      <span class="dot"></span>
+      <span class="live-text" id="liveText">User</span>
+      <span class="live-badge" id="liveBadge">UNLOCKED</span>
+      <span class="spark">✨</span>
+    </div>
+  </div>
+
+  <main class="container">
+    <h1 class="title">Groups</h1>
+    <p class="subtitle">Free + Invite unlock</p>
+
+    <h2 class="section-title"><span class="emoji">🔥</span> Free To Join</h2>
+    <div id="freeGroups"></div>
 
     <section id="unlockedSection" style="display:none;">
-      <h2 class="section-title">✅ Unlocked Groups</h2>
-      <div id="unlockedGroups" class="grid"></div>
+      <h2 class="section-title"><span class="emoji">✅</span> Unlocked Groups</h2>
+      <div id="unlockedGroups"></div>
     </section>
 
-    <section>
-      <h2 class="section-title">🔒 Invite Required</h2>
-      <div id="lockedGroups" class="grid"></div>
-    </section>
+    <h2 class="section-title"><span class="emoji">🔒</span> Invite Required</h2>
+    <div id="lockedGroups"></div>
   </main>
 
   <script src="/groups.js"></script>
