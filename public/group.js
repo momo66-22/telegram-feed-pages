@@ -1,173 +1,231 @@
-function getUserId() {
-  const key = "tg_uid";
-  let id = localStorage.getItem(key);
+// public/group.js
+// Gate + referral flow for URL style: /<groupSlug>?inv=ABCDE
+// Shows gate until unlocked, then loads the feed (app.js) on the same page.
+
+function getOrCreateVisitorId() {
+  const KEY = "tg_visitor_id";
+  let id = localStorage.getItem(KEY);
   if (!id) {
-    const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
-    id = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
-    localStorage.setItem(key, id);
+    id = (crypto && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : ("v_" + Math.random().toString(16).slice(2) + Date.now().toString(16));
+    localStorage.setItem(KEY, id);
   }
   return id;
 }
-const USER_ID = getUserId();
 
 function getSlugFromPath() {
   // "/+93OGk" -> "+93OGk"
-  // "/media"  -> "media"
-  const p = decodeURIComponent(location.pathname || "/");
-  return (p.startsWith("/") ? p.slice(1) : p).trim();
+  const raw = (location.pathname || "").replace(/^\/+/, "");
+  const first = raw.split("/")[0] || "";
+  try {
+    return decodeURIComponent(first);
+  } catch {
+    return first;
+  }
 }
 
-function getInvFromUrl() {
-  const u = new URL(location.href);
-  return (u.searchParams.get("inv") || "").trim().toUpperCase();
+function safePathSlug(slug) {
+  // Keep "+" readable in URLs while still encoding other unsafe chars
+  return encodeURIComponent(slug).replace(/%2B/gi, "+");
 }
 
-function setProgress(cur, needed) {
-  const fill = document.getElementById("progressFill");
-  const txt = document.getElementById("progressText");
-  const n = Math.max(0, Number(cur || 0));
-  const m = Math.max(0, Number(needed || 0));
-  const pct = m ? Math.round((n / m) * 100) : 0;
-  if (fill) fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-  if (txt) txt.textContent = `${n}/${m}`;
+async function fetchJSON(url, options) {
+  const r = await fetch(url, { cache: "no-store", ...options });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return await r.json();
 }
 
-function showFeed() {
-  const gate = document.getElementById("gate");
-  const feed = document.getElementById("feedPage");
+async function getStatus(groupSlug, visitorId) {
+  const u = new URL("/api/referrals/status", location.origin);
+  u.searchParams.set("group_slug", groupSlug);
+  u.searchParams.set("visitor_id", visitorId);
+  return await fetchJSON(u.toString());
+}
+
+async function getMyCode(groupSlug, visitorId) {
+  return await fetchJSON("/api/referrals/code", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ group_slug: groupSlug, visitor_id: visitorId }),
+  });
+}
+
+async function claimCredit(groupSlug, visitorId, referredBy) {
+  return await fetchJSON("/api/referrals/claim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      group_slug: groupSlug,
+      visitor_id: visitorId,
+      referred_by: referredBy || "",
+    }),
+  });
+}
+
+// UI elements (from your group.html)
+const gate = document.getElementById("gate");
+const gateTitle = document.getElementById("gateTitle");
+const gateSub = document.getElementById("gateSub");
+const progressFill = document.getElementById("progressFill");
+const progressText = document.getElementById("progressText");
+const shareBtn = document.getElementById("shareBtn");
+const gateNote = document.getElementById("gateNote");
+
+const feedPage = document.getElementById("feedPage");
+
+function setProgress(have, need) {
+  const n = Math.max(0, Number(need || 0));
+  const h = Math.max(0, Number(have || 0));
+  if (progressText) progressText.textContent = `${h}/${n}`;
+  const pct = n > 0 ? Math.min(100, Math.round((h / n) * 100)) : 0;
+  if (progressFill) progressFill.style.width = `${pct}%`;
+}
+
+function showGate() {
+  if (gate) gate.style.display = "";
+  if (feedPage) feedPage.style.display = "none";
+}
+
+function showFeed(slug) {
   if (gate) gate.style.display = "none";
-  if (feed) feed.style.display = "";
+  if (feedPage) feedPage.style.display = "";
 
-  // Load your existing feed script ONLY after unlocked
-  if (!window.__FEED_LOADED) {
-    window.__FEED_LOADED = true;
+  // Tell app.js which group to load (pathname-style)
+  window.__FEED_GROUP_SLUG = slug;
+
+  // Load app.js once
+  if (!document.getElementById("feedAppScript")) {
     const s = document.createElement("script");
+    s.id = "feedAppScript";
     s.src = "/app.js";
-    s.defer = true;
     document.body.appendChild(s);
   }
 }
 
-async function fetchGroup(slug) {
-  const res = await fetch("/api/groups", { cache: "no-store" });
-  const data = await res.json();
-  const groups = Array.isArray(data.groups) ? data.groups : [];
-  const lc = slug.toLowerCase();
-  return groups.find(g => String(g.slug_lc || "").toLowerCase() === lc) || null;
-}
-
-async function status(slug) {
-  const u = new URL("/api/referrals/status", location.origin);
-  u.searchParams.set("visitor_id", USER_ID);
-  u.searchParams.set("group_slug", slug);
-  const res = await fetch(u.toString(), { cache: "no-store" });
-  return res.json();
-}
-
-async function getMyCode(slug) {
-  const res = await fetch("/api/referrals/code", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ visitor_id: USER_ID, group_slug: slug })
-  });
-  const data = await res.json();
-  if (!data.code) throw new Error("code_failed");
-  return data.code;
-}
-
-async function claim(slug, creditedCode) {
-  const res = await fetch("/api/referrals/claim", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ visitor_id: USER_ID, group_slug: slug, credited_code: creditedCode })
-  });
-  return res.json();
-}
-
-function tgShareLink(url) {
-  return "https://t.me/share/url?url=" + encodeURIComponent(url);
+async function copyToClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function main() {
   const slug = getSlugFromPath();
-  if (!slug) location.href = "/";
-
-  const gateTitle = document.getElementById("gateTitle");
-  const gateSub = document.getElementById("gateSub");
-  const note = document.getElementById("gateNote");
-  const shareBtn = document.getElementById("shareBtn");
-
-  // Track who referred this visitor (stored per group)
-  const creditedCode = getInvFromUrl();
-  const refKey = `tg_ref_${slug.toLowerCase()}`;
-  if (creditedCode && /^[A-Z0-9]{5}$/.test(creditedCode)) {
-    localStorage.setItem(refKey, creditedCode);
-  }
-
-  const group = await fetchGroup(slug);
-  if (!group) {
-    if (gateTitle) gateTitle.textContent = "Group not found";
-    if (gateSub) gateSub.textContent = "This group slug is not in your database.";
-    if (shareBtn) shareBtn.disabled = true;
+  if (!slug || slug.toLowerCase() === "index.html") {
+    location.href = "/";
     return;
   }
 
-  document.title = group.title || "Group";
-  if (gateTitle) gateTitle.textContent = group.title || group.slug;
-  if (gateSub) gateSub.textContent = group.type === "free" ? "Free group" : "Invite people to unlock access.";
+  const visitorId = getOrCreateVisitorId();
 
-  // Free group? show feed immediately
-  if (group.type === "free") {
-    showFeed();
+  // Capture ?inv=XXXXX (store it so you can still credit even if user refreshes)
+  const url = new URL(location.href);
+  const inv = (url.searchParams.get("inv") || "").trim();
+  if (inv) {
+    localStorage.setItem(`tg_referred_by__${slug.toLowerCase()}`, inv);
+  }
+
+  // Initial status
+  let status;
+  try {
+    status = await getStatus(slug, visitorId);
+  } catch (e) {
+    showGate();
+    if (gateTitle) gateTitle.textContent = slug;
+    if (gateSub) gateSub.textContent = "Couldn’t load status. Check /api/referrals/status.";
+    if (gateNote) gateNote.textContent = "";
     return;
   }
 
-  // Invite group: load status
-  let st = await status(slug);
-  setProgress(st.invite_count || 0, st.group?.invites_needed || group.invites_needed || 0);
+  const title = status.group_title || slug;
+  const need = Number(status.invites_needed ?? 0);
+  const have = Number(status.invites_count ?? 0);
+  const unlocked = !!status.unlocked;
 
-  if (st.unlocked) {
-    showFeed();
+  if (gateTitle) gateTitle.textContent = title;
+  if (gateSub) gateSub.textContent = need > 0 ? "Invite people to unlock." : "Free group.";
+  setProgress(have, need);
+
+  if (unlocked || need <= 0) {
+    showFeed(slug);
     return;
   }
 
-  // Share click:
-  shareBtn.addEventListener("click", async () => {
+  showGate();
+
+  // Share button
+  shareBtn.onclick = async () => {
     shareBtn.disabled = true;
+    if (gateNote) gateNote.textContent = "Preparing your invite link…";
+
+    // 1) Ensure we have our own invite code (server-side)
+    let my;
     try {
-      // 1) Ensure this visitor has THEIR OWN code (generated on Share)
-      const myCode = await getMyCode(slug);
-
-      // 2) If they arrived via someone else's ?inv=, credit that inviter ONLY NOW (first share)
-      const ref = localStorage.getItem(refKey) || "";
-      if (ref && /^[A-Z0-9]{5}$/.test(ref)) {
-        await claim(slug, ref);
-        // After claiming once, remove it so it can’t be claimed again from this browser
-        // (server already dedupes too)
-        localStorage.removeItem(refKey);
-      }
-
-      // 3) Open Telegram share with the correct link format:
-      const shareUrl = `${location.origin}/${slug}?inv=${myCode}`;
-      window.open(tgShareLink(shareUrl), "_blank", "noopener,noreferrer");
-
-      // 4) Refresh status UI
-      st = await status(slug);
-      setProgress(st.invite_count || 0, st.group?.invites_needed || group.invites_needed || 0);
-
-      if (st.unlocked) {
-        if (note) note.textContent = "Unlocked ✅";
-        showFeed();
-      } else {
-        if (note) note.textContent = `Your link: /${slug}?inv=${myCode}`;
-      }
+      my = await getMyCode(slug, visitorId);
     } catch (e) {
-      if (note) note.textContent = "Share failed. Try again.";
-    } finally {
       shareBtn.disabled = false;
+      if (gateNote) gateNote.textContent = "Couldn’t generate invite code. Try again.";
+      return;
     }
-  });
+
+    const code = (my.my_invite_code || "").trim();
+    const shareUrl =
+      (my.share_url && String(my.share_url)) ||
+      `${location.origin}/${safePathSlug(slug)}?inv=${encodeURIComponent(code)}`;
+
+    // 2) Claim credit for whoever referred THIS visitor (only counted server-side once)
+    const storedInv = localStorage.getItem(`tg_referred_by__${slug.toLowerCase()}`) || "";
+    try {
+      const claimedKey = `tg_claimed__${slug.toLowerCase()}`;
+      const alreadyClaimed = localStorage.getItem(claimedKey) === "1";
+
+      if (!alreadyClaimed && storedInv) {
+        const claimRes = await claimCredit(slug, visitorId, storedInv);
+        // Mark locally to avoid re-posting (server is still the real dedupe)
+        localStorage.setItem(claimedKey, "1");
+
+        // Update progress from server response if present
+        const newHave = Number(claimRes.invites_count ?? claimRes.credits ?? have);
+        const newNeed = Number(claimRes.invites_needed ?? need);
+        const nowUnlocked = !!claimRes.unlocked;
+
+        setProgress(newHave, newNeed);
+
+        if (nowUnlocked) {
+          if (gateNote) gateNote.textContent = "Unlocked ✅ Loading…";
+          showFeed(slug);
+          return;
+        }
+      }
+    } catch {
+      // ignore; server still dedupes, user can refresh
+    }
+
+    // 3) Copy + open Telegram share
+    const copied = await copyToClipboard(shareUrl);
+    if (gateNote) gateNote.textContent = copied
+      ? "Copied your invite link ✅ Opening share…"
+      : "Opening share…";
+
+    const tgShare = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}`;
+    window.open(tgShare, "_blank", "noopener,noreferrer");
+
+    // 4) Refresh status (so progress updates after share)
+    try {
+      const fresh = await getStatus(slug, visitorId);
+      setProgress(Number(fresh.invites_count ?? 0), Number(fresh.invites_needed ?? 0));
+      if (fresh.unlocked) {
+        if (gateNote) gateNote.textContent = "Unlocked ✅ Loading…";
+        showFeed(slug);
+        return;
+      }
+    } catch {}
+
+    shareBtn.disabled = false;
+  };
 }
 
-main().catch(() => {});
+document.addEventListener("DOMContentLoaded", main);
