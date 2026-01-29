@@ -143,37 +143,34 @@ async function loadGroups() {
 }
 
 function getGroupFromUrl(groups) {
-  const url = new URL(window.location.href);
+  const url = new URL(location.href);
 
-  // Back-compat: allow ?g=media or ?g=all
-  const q = (url.searchParams.get("g") || "").trim();
-
-  // Path routing: /+93OGk or /media
-  const path = decodeURIComponent(url.pathname || "/");
+  // Prefer clean /<slug>
+  const seg = (location.pathname.split("/").filter(Boolean)[0] || "");
   let slug = "";
-  if (path && path !== "/" && path !== "/index.html" && path !== "/group.html") {
-    slug = path.replace(/^\/+/, "");
-  } else if (q) {
-    slug = q;
+  try {
+    slug = decodeURIComponent(seg).trim();
+  } catch {
+    slug = String(seg).trim();
   }
 
-  if (!slug) {
-    return { mode: "group", group: groups[0] || null, slug: (groups[0]?.slug || "") };
-  }
-  if (slug.toLowerCase() === "all") {
-    return { mode: "all", group: null, slug: "all" };
-  }
+  // Ignore reserved paths
+  const reserved = new Set(["", "index.html", "group.html", "groups.html", "api"]);
+  if (reserved.has(slug.toLowerCase())) slug = "";
 
-  const slugLc = slug.toLowerCase();
-  const found = groups.find(g => String(g.slug_lc || g.slug || "").toLowerCase() === slugLc);
-  const chosen = found || groups[0] || null;
-  return {
-    mode: "group",
-    group: chosen,
-    // Use canonical slug from DB if we have it (preserves original casing)
-    slug: String((chosen && chosen.slug) ? chosen.slug : slug)
-  };
+  // Fallback for older links
+  if (!slug) slug = (url.searchParams.get("g") || "").trim();
+
+  // Fallback if group.js set it
+  if (!slug && window.__ACTIVE_GROUP_SLUG) slug = String(window.__ACTIVE_GROUP_SLUG);
+
+  if (!slug) return { mode: "group", group: groups[0] || null, slug: groups[0]?.slug || "" };
+  if (slug.toLowerCase() === "all") return { mode: "all", group: null, slug: "all" };
+
+  const found = groups.find((g) => String(g.slug || "").toLowerCase() === slug.toLowerCase());
+  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {}).slug || "" };
 }
+
 
 function applyGroupToConfig(sel) {
   // Default behavior if no groups.json or no match
