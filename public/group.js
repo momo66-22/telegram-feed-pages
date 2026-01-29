@@ -1,231 +1,196 @@
 // public/group.js
-// Gate + referral flow for URL style: /<groupSlug>?inv=ABCDE
-// Shows gate until unlocked, then loads the feed (app.js) on the same page.
-
-function getOrCreateVisitorId() {
-  const KEY = "tg_visitor_id";
-  let id = localStorage.getItem(KEY);
-  if (!id) {
-    id = (crypto && crypto.randomUUID)
-      ? crypto.randomUUID()
-      : ("v_" + Math.random().toString(16).slice(2) + Date.now().toString(16));
-    localStorage.setItem(KEY, id);
-  }
-  return id;
-}
-
-function getSlugFromPath() {
-  // "/+93OGk" -> "+93OGk"
-  const raw = (location.pathname || "").replace(/^\/+/, "");
-  const first = raw.split("/")[0] || "";
-  try {
-    return decodeURIComponent(first);
-  } catch {
-    return first;
-  }
-}
-
-function safePathSlug(slug) {
-  // Keep "+" readable in URLs while still encoding other unsafe chars
-  return encodeURIComponent(slug).replace(/%2B/gi, "+");
-}
-
-async function fetchJSON(url, options) {
-  const r = await fetch(url, { cache: "no-store", ...options });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return await r.json();
-}
-
-async function getStatus(groupSlug, visitorId) {
-  const u = new URL("/api/referrals/status", location.origin);
-  u.searchParams.set("group_slug", groupSlug);
-  u.searchParams.set("visitor_id", visitorId);
-  return await fetchJSON(u.toString());
-}
-
-async function getMyCode(groupSlug, visitorId) {
-  return await fetchJSON("/api/referrals/code", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ group_slug: groupSlug, visitor_id: visitorId }),
-  });
-}
-
-async function claimCredit(groupSlug, visitorId, referredBy) {
-  return await fetchJSON("/api/referrals/claim", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      group_slug: groupSlug,
-      visitor_id: visitorId,
-      referred_by: referredBy || "",
-    }),
-  });
-}
-
-// UI elements (from your group.html)
-const gate = document.getElementById("gate");
-const gateTitle = document.getElementById("gateTitle");
-const gateSub = document.getElementById("gateSub");
-const progressFill = document.getElementById("progressFill");
-const progressText = document.getElementById("progressText");
-const shareBtn = document.getElementById("shareBtn");
-const gateNote = document.getElementById("gateNote");
-
-const feedPage = document.getElementById("feedPage");
-
-function setProgress(have, need) {
-  const n = Math.max(0, Number(need || 0));
-  const h = Math.max(0, Number(have || 0));
-  if (progressText) progressText.textContent = `${h}/${n}`;
-  const pct = n > 0 ? Math.min(100, Math.round((h / n) * 100)) : 0;
-  if (progressFill) progressFill.style.width = `${pct}%`;
-}
-
-function showGate() {
-  if (gate) gate.style.display = "";
-  if (feedPage) feedPage.style.display = "none";
-}
-
-function showFeed(slug) {
-  if (gate) gate.style.display = "none";
-  if (feedPage) feedPage.style.display = "";
-
-  // Tell app.js which group to load (pathname-style)
-  window.__FEED_GROUP_SLUG = slug;
-
-  // Load app.js once
-  if (!document.getElementById("feedAppScript")) {
-    const s = document.createElement("script");
-    s.id = "feedAppScript";
-    s.src = "/app.js";
-    document.body.appendChild(s);
-  }
-}
-
-async function copyToClipboard(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function main() {
-  const slug = getSlugFromPath();
-  if (!slug || slug.toLowerCase() === "index.html") {
-    location.href = "/";
-    return;
+(function () {
+  // ===== Utilities =====
+  function getOrCreateVisitorId() {
+    const KEY = "tg_uid"; // keep same key app.js uses
+    let id = localStorage.getItem(KEY);
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : ("u_" + Math.random().toString(16).slice(2) + Date.now().toString(16)));
+      localStorage.setItem(KEY, id);
+    }
+    return id;
   }
 
-  const visitorId = getOrCreateVisitorId();
+  const VISITOR_ID = getOrCreateVisitorId();
 
-  // Capture ?inv=XXXXX (store it so you can still credit even if user refreshes)
-  const url = new URL(location.href);
-  const inv = (url.searchParams.get("inv") || "").trim();
-  if (inv) {
-    localStorage.setItem(`tg_referred_by__${slug.toLowerCase()}`, inv);
+  function $(id) { return document.getElementById(id); }
+
+  async function fetchJSON(url, opts) {
+    const res = await fetch(url, { cache: "no-store", ...(opts || {}) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data?.error || "request_failed");
+    return data;
   }
 
-  // Initial status
-  let status;
-  try {
-    status = await getStatus(slug, visitorId);
-  } catch (e) {
-    showGate();
-    if (gateTitle) gateTitle.textContent = slug;
-    if (gateSub) gateSub.textContent = "Couldn’t load status. Check /api/referrals/status.";
-    if (gateNote) gateNote.textContent = "";
-    return;
+  function getSlugFromPath() {
+    const raw = decodeURIComponent(window.location.pathname || "/");
+    const s = raw.replace(/^\/+/, "").replace(/\/+$/, "");
+    return s || "";
   }
 
-  const title = status.group_title || slug;
-  const need = Number(status.invites_needed ?? 0);
-  const have = Number(status.invites_count ?? 0);
-  const unlocked = !!status.unlocked;
-
-  if (gateTitle) gateTitle.textContent = title;
-  if (gateSub) gateSub.textContent = need > 0 ? "Invite people to unlock." : "Free group.";
-  setProgress(have, need);
-
-  if (unlocked || need <= 0) {
-    showFeed(slug);
-    return;
+  function ensureGParam(slug) {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.get("g")) {
+      url.searchParams.set("g", slug); // URLSearchParams will encode "+" as %2B (good)
+      history.replaceState({}, "", url.pathname + "?" + url.searchParams.toString() + url.hash);
+    }
   }
 
-  showGate();
+  function setProgress(count, need) {
+    const fill = $("progressFill");
+    const text = $("progressText");
+    const n = Math.max(0, Number(need || 0));
+    const c = Math.max(0, Number(count || 0));
+    if (text) text.textContent = `${c}/${n}`;
+    if (fill) fill.style.width = (n <= 0 ? "0%" : `${Math.min(100, (c / n) * 100)}%`);
+  }
 
-  // Share button
-  shareBtn.onclick = async () => {
-    shareBtn.disabled = true;
-    if (gateNote) gateNote.textContent = "Preparing your invite link…";
+  function showGate() {
+    const gate = $("gate");
+    const feedPage = $("feedPage");
+    if (gate) gate.style.display = "";
+    if (feedPage) feedPage.style.display = "none";
+  }
 
-    // 1) Ensure we have our own invite code (server-side)
-    let my;
-    try {
-      my = await getMyCode(slug, visitorId);
-    } catch (e) {
-      shareBtn.disabled = false;
-      if (gateNote) gateNote.textContent = "Couldn’t generate invite code. Try again.";
+  function showFeedAndBootApp() {
+    const gate = $("gate");
+    const feedPage = $("feedPage");
+    if (gate) gate.style.display = "none";
+    if (feedPage) feedPage.style.display = "";
+
+    // Load app.js once (group.html doesn’t include it)
+    if (!document.querySelector('script[data-appjs="1"]')) {
+      const s = document.createElement("script");
+      s.src = "/app.js";
+      s.defer = true;
+      s.dataset.appjs = "1";
+      document.body.appendChild(s);
+    }
+  }
+
+  // ===== Main =====
+  const gateTitle = $("gateTitle");
+  const gateSub = $("gateSub");
+  const gateNote = $("gateNote");
+  const shareBtn = $("shareBtn");
+
+  async function refreshStatus(groupSlug) {
+    return fetchJSON(`/api/referrals/status?group_slug=${encodeURIComponent(groupSlug)}&visitor_id=${encodeURIComponent(VISITOR_ID)}`);
+  }
+
+  async function getMyCode(groupSlug) {
+    const data = await fetchJSON(`/api/referrals/code?group_slug=${encodeURIComponent(groupSlug)}&visitor_id=${encodeURIComponent(VISITOR_ID)}`);
+    return data.code;
+  }
+
+  async function claimInvite(groupSlug, creditedCode) {
+    // creditedCode is the ?inv= from the URL (inviter’s code)
+    return fetchJSON(`/api/referrals/claim`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        visitor_id: VISITOR_ID,
+        group_slug: groupSlug,
+        credited_code: creditedCode
+      })
+    });
+  }
+
+  async function init() {
+    // Determine group slug
+    const url = new URL(window.location.href);
+    const gParam = url.searchParams.get("g");
+    const pathSlug = getSlugFromPath();
+
+    // If you visit "/media" without ?g, we still know it's "media"
+    const groupSlug = (gParam && gParam.trim()) ? gParam.trim() : pathSlug;
+
+    if (!groupSlug) {
+      // No slug (should only happen on "/")
+      window.location.replace("/");
       return;
     }
 
-    const code = (my.my_invite_code || "").trim();
-    const shareUrl =
-      (my.share_url && String(my.share_url)) ||
-      `${location.origin}/${safePathSlug(slug)}?inv=${encodeURIComponent(code)}`;
+    // Make sure app.js will have ?g=...
+    ensureGParam(groupSlug);
 
-    // 2) Claim credit for whoever referred THIS visitor (only counted server-side once)
-    const storedInv = localStorage.getItem(`tg_referred_by__${slug.toLowerCase()}`) || "";
+    // Load status
+    let st;
     try {
-      const claimedKey = `tg_claimed__${slug.toLowerCase()}`;
-      const alreadyClaimed = localStorage.getItem(claimedKey) === "1";
-
-      if (!alreadyClaimed && storedInv) {
-        const claimRes = await claimCredit(slug, visitorId, storedInv);
-        // Mark locally to avoid re-posting (server is still the real dedupe)
-        localStorage.setItem(claimedKey, "1");
-
-        // Update progress from server response if present
-        const newHave = Number(claimRes.invites_count ?? claimRes.credits ?? have);
-        const newNeed = Number(claimRes.invites_needed ?? need);
-        const nowUnlocked = !!claimRes.unlocked;
-
-        setProgress(newHave, newNeed);
-
-        if (nowUnlocked) {
-          if (gateNote) gateNote.textContent = "Unlocked ✅ Loading…";
-          showFeed(slug);
-          return;
-        }
-      }
-    } catch {
-      // ignore; server still dedupes, user can refresh
+      st = await refreshStatus(groupSlug);
+    } catch (e) {
+      console.error(e);
+      if (gateTitle) gateTitle.textContent = "Group not found";
+      if (gateSub) gateSub.textContent = "This group slug doesn’t exist in D1.";
+      if (gateNote) gateNote.textContent = "Go back and check your D1 groups table.";
+      showGate();
+      return;
     }
 
-    // 3) Copy + open Telegram share
-    const copied = await copyToClipboard(shareUrl);
-    if (gateNote) gateNote.textContent = copied
-      ? "Copied your invite link ✅ Opening share…"
-      : "Opening share…";
+    const title = st?.group?.title || groupSlug;
+    const type = st?.group?.type || "invite";
+    const invitesNeeded = Number(st?.invites_needed || 0);
+    const invitesCount = Number(st?.invites_count || 0);
 
-    const tgShare = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}`;
-    window.open(tgShare, "_blank", "noopener,noreferrer");
+    if (gateTitle) gateTitle.textContent = title;
 
-    // 4) Refresh status (so progress updates after share)
-    try {
-      const fresh = await getStatus(slug, visitorId);
-      setProgress(Number(fresh.invites_count ?? 0), Number(fresh.invites_needed ?? 0));
-      if (fresh.unlocked) {
-        if (gateNote) gateNote.textContent = "Unlocked ✅ Loading…";
-        showFeed(slug);
-        return;
-      }
-    } catch {}
+    if (type === "free") {
+      // Free groups open immediately
+      showFeedAndBootApp();
+      return;
+    }
 
-    shareBtn.disabled = false;
-  };
-}
+    // Invite groups: gate until unlocked
+    if (gateSub) gateSub.textContent = "Invite people to unlock.";
+    setProgress(invitesCount, invitesNeeded);
 
-document.addEventListener("DOMContentLoaded", main);
+    if (st.unlocked) {
+      showFeedAndBootApp();
+      return;
+    }
+
+    showGate();
+
+    // Share button logic
+    if (shareBtn) {
+      shareBtn.onclick = async () => {
+        try {
+          shareBtn.disabled = true;
+          if (gateNote) gateNote.textContent = "Preparing your invite link…";
+
+          const myCode = await getMyCode(groupSlug);
+
+          // If user arrived with ?inv=, claim it NOW (this is the “B clicks Share gives A +1” rule)
+          const creditedCode = url.searchParams.get("inv");
+          if (creditedCode) {
+            try { await claimInvite(groupSlug, creditedCode); } catch (e) { /* ignore */ }
+          }
+
+          // Build clean share link (no ?g needed — group.js will add it for them)
+          const cleanPathSlug = encodeURI(groupSlug);
+          const shareUrl = `${window.location.origin}/${cleanPathSlug}?inv=${encodeURIComponent(myCode)}`;
+
+          try { await navigator.clipboard.writeText(shareUrl); } catch {}
+          if (gateNote) gateNote.textContent = `Copied invite link: ${shareUrl}`;
+
+          // Refresh + maybe unlock
+          const st2 = await refreshStatus(groupSlug);
+          setProgress(st2.invites_count, st2.invites_needed);
+
+          if (st2.unlocked) {
+            showFeedAndBootApp();
+          } else if (gateNote) {
+            gateNote.textContent = `Invite link copied. You need ${st2.invites_needed - st2.invites_count} more invite(s).`;
+          }
+        } catch (e) {
+          console.error(e);
+          if (gateNote) gateNote.textContent = "Something failed. Try again.";
+        } finally {
+          shareBtn.disabled = false;
+        }
+      };
+    }
+  }
+
+  init();
+})();

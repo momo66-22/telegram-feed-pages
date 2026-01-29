@@ -1,1 +1,3 @@
 /api/*   /api/:splat   200
+/        /index.html   200
+/*       /group.html   200
