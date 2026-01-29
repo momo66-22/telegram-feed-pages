@@ -1,149 +1,146 @@
-// public/groups.js
-(function () {
-  // ===== Utilities =====
-  function getOrCreateVisitorId() {
-    const KEY = "tg_uid"; // keep same key app.js uses
-    let id = localStorage.getItem(KEY);
-    if (!id) {
-      id = (crypto.randomUUID ? crypto.randomUUID() : ("u_" + Math.random().toString(16).slice(2) + Date.now().toString(16)));
-      localStorage.setItem(KEY, id);
-    }
-    return id;
-  }
+const $ = (sel) => document.querySelector(sel);
 
-  const VISITOR_ID = getOrCreateVisitorId();
+function htmlEscape(s) {
+  return String(s || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
 
-  function qs(sel) { return document.querySelector(sel); }
+function toSlugHref(slug) {
+  // Keep "+" looking normal (no %2B). Slugs should not contain "/" anyway.
+  const clean = String(slug || "").replace(/^\/+/, "");
+  return encodeURI("/" + clean);
+}
 
-  async function fetchJSON(url) {
-    const res = await fetch(url, { cache: "no-store" });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data?.error || "request_failed");
-    return data;
-  }
+function badge({ text, cls }) {
+  if (!text) return "";
+  return `<span class="badge ${cls || ""}">${htmlEscape(text)}</span>`;
+}
 
-  // ===== UI helpers (your existing layout expects these containers) =====
-  const freeWrap = document.getElementById("freeGroups");
-  const lockedWrap = document.getElementById("lockedGroups");
-  const unlockedSection = document.getElementById("unlockedSection");
-  const unlockedWrap = document.getElementById("unlockedGroups");
+function cardHTML(g, { inviteText, badgeText, badgeClass, ring }) {
+  const href = toSlugHref(g.slug);
 
-  function empty(el) { if (el) el.innerHTML = ""; }
+  const icon = (g.icon_url || "").trim();
+  const avatar = icon
+    ? `<img class="avatar-img" src="${htmlEscape(icon)}" alt="">`
+    : `<div class="avatar-fallback">${htmlEscape((g.title || "G").slice(0, 1).toUpperCase())}</div>`;
 
-  function mkCard(g, status) {
-    // status can be null if status call fails
-    const isInvite = g.type === "invite";
-    const isUnlocked = !!status?.unlocked;
-    const invitesNeeded = Number(status?.invites_needed ?? g.invites_needed ?? 0);
-    const invitesCount = Number(status?.invites_count ?? 0);
+  const ringClass = ring ? "is-ring" : "";
 
-    // Build clean path URL: "/<slug>"
-    // encodeURI keeps "+" in the PATH (good for your telegram-looking invite slugs)
-    const pathSlug = encodeURI(String(g.slug || "").trim());
-    const href = `/${pathSlug}?g=${encodeURIComponent(g.slug)}`;
-
-    const a = document.createElement("a");
-    a.className = "gCard";           // your CSS
-    a.href = href;
-
-    // avatar initial
-    const initial = (g.title || g.slug || "?").trim().slice(0, 1).toUpperCase();
-
-    // pill labels
-    const rightPill = isInvite ? (isUnlocked ? "UNLOCKED" : "INVITE REQUIRED") : "FREE TO JOIN";
-
-    a.innerHTML = `
-      <div class="gLeft">
-        <div class="gAvatar">${initial}</div>
-        <div class="gText">
-          <div class="gTopLine">
-            <span class="gBrand">Telegram</span>
-            <span class="gPill ${isInvite ? "pillRed" : "pillGreen"}">${rightPill}</span>
+  return `
+    <a class="group-card ${ringClass}" href="${href}">
+      <div class="left">
+        <div class="avatar">${avatar}</div>
+        <div class="meta">
+          <div class="topline">
+            <span class="brand">Telegram</span>
+            ${badge({ text: badgeText, cls: badgeClass })}
           </div>
-          <div class="gTitle">${escapeHtml(g.title || g.slug || "Group")}</div>
-          <div class="gSub">${escapeHtml(g.description || (isInvite ? "Invite only group" : "Public feed"))}</div>
-          ${isInvite ? `<div class="gInvites">${invitesCount} / ${invitesNeeded} invites</div>` : ``}
+          <div class="title">${htmlEscape(g.title || g.slug || "Group")}</div>
+          <div class="desc">${htmlEscape(g.description || "")}</div>
+          ${inviteText ? `<div class="invites">${htmlEscape(inviteText)}</div>` : ``}
         </div>
       </div>
-      <div class="gRight">
-        <button class="gJoinBtn" type="button">JOIN</button>
+      <div class="right">
+        <button class="join-btn" type="button">JOIN</button>
       </div>
-    `;
+    </a>
+  `;
+}
 
-    // Make button click also go to the link
-    const btn = a.querySelector(".gJoinBtn");
-    btn.addEventListener("click", (e) => {
-      e.preventDefault();
-      window.location.href = href;
-    });
+async function fetchJSON(url, opts) {
+  const res = await fetch(url, opts);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return await res.json();
+}
 
-    return a;
+function renderSection({ title, icon, list, mountSel }) {
+  const mount = $(mountSel);
+  if (!mount) return;
+
+  const header = `
+    <div class="section-title">
+      <span class="section-icon">${icon || ""}</span>
+      <span>${htmlEscape(title)}</span>
+    </div>
+  `;
+
+  if (!list.length) {
+    mount.innerHTML = header + `<div class="empty">No groups.</div>`;
+    return;
   }
 
-  function escapeHtml(s) {
-    return String(s || "")
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
-  }
+  mount.innerHTML = header + list.join("");
+}
 
-  async function load() {
-    empty(freeWrap); empty(lockedWrap); empty(unlockedWrap);
-    if (unlockedSection) unlockedSection.style.display = "none";
-
-    const { groups } = await fetchJSON("/api/groups");
-    const list = Array.isArray(groups) ? groups : [];
-
-    // Fetch status for each group (so we can show unlocked + counts)
-    const statusMap = new Map();
-    await Promise.all(list.map(async (g) => {
-      try {
-        const st = await fetchJSON(`/api/referrals/status?group_slug=${encodeURIComponent(g.slug)}&visitor_id=${encodeURIComponent(VISITOR_ID)}`);
-        statusMap.set(g.slug, st);
-      } catch {
-        statusMap.set(g.slug, null);
-      }
-    }));
+(async function main() {
+  try {
+    // This endpoint is expected to return:
+    // { groups: [...], unlocked_slugs: [...], invite_counts: { [slug_lc]: number } }
+    // If yours returns different keys, tell me what it returns and I’ll adapt it.
+    const data = await fetchJSON("/api/referrals/summary");
+    const groups = data.groups || [];
+    const unlocked = new Set((data.unlocked_slugs || []).map((s) => String(s).toLowerCase()));
+    const inviteCounts = data.invite_counts || {};
 
     const free = [];
-    const invite = [];
-    const unlocked = [];
+    const locked = [];
+    const unlockedCards = [];
 
-    for (const g of list) {
-      const st = statusMap.get(g.slug);
-      if (g.type === "free") free.push(g);
-      else {
-        invite.push(g);
-        if (st?.unlocked) unlocked.push(g);
-      }
-    }
+    for (const g of groups) {
+      const slugLc = String(g.slug || "").toLowerCase();
+      const needed = Number(g.invites_needed || 0);
 
-    // Render free
-    if (freeWrap) {
-      for (const g of free) freeWrap.appendChild(mkCard(g, statusMap.get(g.slug)));
-    }
+      const isInviteRequired = needed > 0;
+      const isUnlocked = unlocked.has(slugLc);
 
-    // Render unlocked (only invite groups that are unlocked)
-    if (unlocked.length && unlockedWrap && unlockedSection) {
-      unlockedSection.style.display = "block";
-      for (const g of unlocked) unlockedWrap.appendChild(mkCard(g, statusMap.get(g.slug)));
-    }
-
-    // Render locked invite groups (exclude unlocked ones from this list if you want)
-    if (lockedWrap) {
-      const lockedOnly = invite.filter(g => !statusMap.get(g.slug)?.unlocked);
-      if (!lockedOnly.length) {
-        lockedWrap.innerHTML = `<div class="gEmpty">No invite-required groups yet. Add rows to D1 <code>groups</code> table.</div>`;
+      if (!isInviteRequired) {
+        free.push(
+          cardHTML(g, {
+            inviteText: "Public feed",
+            badgeText: "FREE TO JOIN",
+            badgeClass: "badge-free",
+            ring: true,
+          })
+        );
+      } else if (isUnlocked) {
+        const have = Number(inviteCounts[slugLc] || 0);
+        unlockedCards.push(
+          cardHTML(g, {
+            inviteText: `${have} / ${needed} invites`,
+            badgeText: "UNLOCKED",
+            badgeClass: "badge-unlocked",
+            ring: true,
+          })
+        );
       } else {
-        for (const g of lockedOnly) lockedWrap.appendChild(mkCard(g, statusMap.get(g.slug)));
+        const have = Number(inviteCounts[slugLc] || 0);
+        locked.push(
+          cardHTML(g, {
+            inviteText: `${have} / ${needed} invites`,
+            badgeText: "INVITE REQUIRED",
+            badgeClass: "badge-locked",
+            ring: false,
+          })
+        );
       }
     }
-  }
 
-  load().catch((e) => {
-    console.error(e);
-    if (lockedWrap) lockedWrap.innerHTML = `<div class="gEmpty">Failed to load groups.</div>`;
-  });
+    renderSection({ title: "Free To Join", icon: "🔥", list: free, mountSel: "#freeGroups" });
+
+    if (unlockedCards.length) {
+      renderSection({ title: "Unlocked Groups", icon: "✅", list: unlockedCards, mountSel: "#unlockedGroups" });
+    } else {
+      const mount = $("#unlockedGroups");
+      if (mount) mount.innerHTML = "";
+    }
+
+    renderSection({ title: "Invite Required", icon: "🔒", list: locked, mountSel: "#inviteGroups" });
+  } catch (e) {
+    const mount = $("#inviteGroups") || $("#freeGroups");
+    if (mount) mount.innerHTML = `<div class="empty">Failed to load groups: ${htmlEscape(e.message)}</div>`;
+  }
 })();
