@@ -112,26 +112,21 @@ function renderCaption(md) {
 // Groups support
 // -----------------------
 function assetUrl(path) {
-  // Always load static assets from the site root (important when the page is on /+slug)
-  const p = String(path || "");
-  const clean = p.startsWith("/") ? p : "/" + p;
-  return new URL(clean, window.location.origin).toString();
+  // Always resolve assets from site root so routes like /media don't break relative URLs.
+  // Examples:
+  //   assetUrl("groups.json") -> https://site/groups.json
+  //   assetUrl("/styles.css") -> https://site/styles.css
+  if (!path) return new URL(location.pathname, location.origin).toString();
+
+  // absolute URLs stay as-is
+  if (/^https?:\/\//i.test(path)) return path;
+
+  // ensure leading slash
+  const clean = path.startsWith("/") ? path : `/${path}`;
+  return new URL(clean, location.origin).toString();
 }
 
 async function loadGroups() {
-  // Preferred: D1-backed groups list (works in production)
-  try {
-    const r = await fetch(new URL("/api/groups", window.location.origin), { cache: "no-store" });
-    if (r.ok) {
-      const data = await r.json();
-      const groups = Array.isArray(data) ? data : (data && Array.isArray(data.groups) ? data.groups : []);
-      if (groups.length) return groups;
-    }
-  } catch (e) {
-    // ignore, fallback below
-  }
-
-  // Fallback: static groups.json (older/local setups)
   try {
     const r = await fetch(assetUrl("groups.json"), { cache: "no-store" });
     if (!r.ok) return [];
@@ -145,32 +140,40 @@ async function loadGroups() {
 function getGroupFromUrl(groups) {
   const url = new URL(location.href);
 
-  // Prefer clean /<slug>
-  const seg = (location.pathname.split("/").filter(Boolean)[0] || "");
+  // 1) Preferred: /<slug> (path-based)
+  // 2) Back-compat: /group?g=<slug>
+  // 3) Fallback: first group
+  const rawPath = (location.pathname || "/").replace(/^\/+|\/+$/g, ""); // trim leading/trailing /
+  const segs = rawPath ? rawPath.split("/") : [];
+  const first = (segs[0] || "").trim();
+
   let slug = "";
-  try {
-    slug = decodeURIComponent(seg).trim();
-  } catch {
-    slug = String(seg).trim();
+
+  // If path looks like a file or a known non-slug route, ignore it and use ?g=
+  const looksLikeFile = first.includes(".");
+  const isKnownRoute =
+    !first ||
+    ["index.html", "group.html", "group", "home"].includes(first.toLowerCase()) ||
+    first.toLowerCase() === "api";
+
+  if (!looksLikeFile && !isKnownRoute) {
+    // Support optional /g/<slug> style too (in case you ever use it)
+    if (first.toLowerCase() === "g" && segs[1]) slug = decodeURIComponent(segs[1]);
+    else slug = decodeURIComponent(first);
+  } else {
+    slug = (url.searchParams.get("g") || "").trim();
   }
-
-  // Ignore reserved paths
-  const reserved = new Set(["", "index.html", "group.html", "groups.html", "api"]);
-  if (reserved.has(slug.toLowerCase())) slug = "";
-
-  // Fallback for older links
-  if (!slug) slug = (url.searchParams.get("g") || "").trim();
-
-  // Fallback if group.js set it
-  if (!slug && window.__ACTIVE_GROUP_SLUG) slug = String(window.__ACTIVE_GROUP_SLUG);
 
   if (!slug) return { mode: "group", group: groups[0] || null, slug: groups[0]?.slug || "" };
   if (slug.toLowerCase() === "all") return { mode: "all", group: null, slug: "all" };
 
-  const found = groups.find((g) => String(g.slug || "").toLowerCase() === slug.toLowerCase());
-  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {}).slug || "" };
-}
+  const slugLc = slug.toLowerCase();
+  const found =
+    groups.find(g => String(g.slug || "").toLowerCase() === slugLc) ||
+    groups.find(g => String(g.slug_lc || "").toLowerCase() === slugLc);
 
+  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {})?.slug || "" };
+}
 
 function applyGroupToConfig(sel) {
   // Default behavior if no groups.json or no match
@@ -184,9 +187,7 @@ function applyGroupToConfig(sel) {
 
   CONFIG.channelTitle = (sel.group.channelTitle || sel.group.title || CONFIG.channelTitle || "").toUpperCase();
   CONFIG.defaultGroupTitle = sel.group.title || CONFIG.defaultGroupTitle;
-  if (sel.group.avatar_url) CONFIG.avatarUrl = sel.group.avatar_url;
-if (sel.group.icon_url && !CONFIG.avatarUrl) CONFIG.avatarUrl = sel.group.icon_url;
-if (sel.group.avatarUrl) CONFIG.avatarUrl = sel.group.avatarUrl;
+  if (sel.group.avatarUrl) CONFIG.avatarUrl = sel.group.avatarUrl;
   if (sel.group.accent) document.documentElement.style.setProperty("--accent", sel.group.accent);
 }
 
@@ -966,7 +967,7 @@ async function main() {
   try {
     // Load groups and select one based on ?g=
     const groups = await loadGroups();
-    const sel = getGroupFromUrl(groups);
+    const sel = getGroupFromUrl(groups); // /<slug> (preferred) OR /group?g=<slug> (fallback) OR /?g=all
     applyGroupToConfig(sel);
 
     // Apply header/back after CONFIG updates
