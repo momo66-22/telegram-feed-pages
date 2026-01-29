@@ -1,173 +1,248 @@
-const $ = (sel) => document.querySelector(sel);
-
-function getOrCreateVisitorId() {
-  const key = "vid";
-  let v = localStorage.getItem(key);
-  if (v) return v;
-
-  if (crypto?.randomUUID) v = crypto.randomUUID();
-  else v = "v_" + Math.random().toString(16).slice(2) + Date.now().toString(16);
-
-  localStorage.setItem(key, v);
-  return v;
+// public/group.js
+function $(id) {
+  return document.getElementById(id);
 }
 
-function getSlugFromPath() {
-  // /media  -> "media"
-  // /+93OGk -> "+93OGk"
-  const seg = (location.pathname.split("/").filter(Boolean)[0] || "").trim();
-  try {
-    return decodeURIComponent(seg);
-  } catch {
-    return seg;
+function ensureVisitorId() {
+  const KEY = "visitor_id";
+  let vid = localStorage.getItem(KEY);
+
+  if (!vid) {
+    if (crypto?.randomUUID) vid = crypto.randomUUID();
+    else vid = "v_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem(KEY, vid);
   }
+
+  document.cookie = `visitor_id=${encodeURIComponent(vid)}; path=/; max-age=31536000; SameSite=Lax`;
+  return vid;
 }
 
-function setText(id, text) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = text;
+function getSlugFromURL() {
+  const url = new URL(location.href);
+
+  // Option A
+  let slug = url.searchParams.get("g") || "";
+
+  // fallback: if someone manually hits /media etc.
+  if (!slug) {
+    const p = url.pathname.replace(/^\/+|\/+$/g, "");
+    if (p && p !== "group") slug = decodeURIComponent(p);
+  }
+
+  // IMPORTANT: URLSearchParams turns "+" into space sometimes. Undo that.
+  slug = (slug || "").trim().replace(/ /g, "+");
+  return slug;
 }
 
-function showGate() {
-  $("#gatePage")?.classList.remove("hidden");
-  $("#feedPage")?.classList.add("hidden");
-}
-
-function showFeed() {
-  $("#gatePage")?.classList.add("hidden");
-  $("#feedPage")?.classList.remove("hidden");
+function getInvFromURL() {
+  const url = new URL(location.href);
+  let inv = url.searchParams.get("inv") || "";
+  inv = (inv || "").trim().replace(/ /g, "+");
+  return inv;
 }
 
 async function fetchJSON(url, opts) {
-  const res = await fetch(url, opts);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return await res.json();
+  const res = await fetch(url, { cache: "no-store", ...opts });
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch {}
+  return { res, data, text };
 }
 
-async function loadApp() {
-  return new Promise((resolve, reject) => {
+async function getGroup(slug) {
+  // If your /api/groups supports ?slug= use it, otherwise fall back to list
+  const tryOne = await fetchJSON(`/api/groups?slug=${encodeURIComponent(slug)}`);
+  if (tryOne.res.ok && tryOne.data?.group) return tryOne.data.group;
+
+  const list = await fetchJSON("/api/groups");
+  if (!list.res.ok) throw new Error(`Failed to load groups: HTTP ${list.res.status}`);
+  const groups = list.data?.groups || [];
+
+  const want = slug.toLowerCase();
+  const found = groups.find(g => String(g.slug_lc || g.slug || "").toLowerCase() === want);
+  if (!found) throw new Error(`Group not found: ${slug}`);
+  return found;
+}
+
+async function getStatus(groupSlug, visitorId) {
+  const u = new URL("/api/referrals/status", location.origin);
+  u.searchParams.set("group_slug", groupSlug);
+  u.searchParams.set("visitor_id", visitorId);
+
+  const { res, data } = await fetchJSON(u.toString());
+  if (!res.ok) return null;
+  return data;
+}
+
+async function getMyCode(groupSlug, visitorId) {
+  const { res, data, text } = await fetchJSON("/api/referrals/code", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ group_slug: groupSlug, visitor_id: visitorId })
+  });
+  if (!res.ok) throw new Error(text || `code failed: HTTP ${res.status}`);
+  return data?.code || "";
+}
+
+async function claimIfNeeded(groupSlug, visitorId, creditedCode) {
+  if (!creditedCode) return null;
+
+  const { res, data } = await fetchJSON("/api/referrals/claim", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      group_slug: groupSlug,
+      visitor_id: visitorId,
+      credited_code: creditedCode
+    })
+  });
+
+  if (!res.ok) return null;
+  return data;
+}
+
+function setProgress(invites, needed) {
+  const fill = $("progressFill");
+  const text = $("progressText");
+  const pct = needed > 0 ? Math.min(100, Math.round((invites / needed) * 100)) : 0;
+
+  fill.style.width = `${pct}%`;
+  text.textContent = `${invites}/${needed}`;
+}
+
+function showGate() {
+  $("gate").style.display = "";
+  $("feedPage").style.display = "none";
+}
+
+function showFeed() {
+  $("gate").style.display = "none";
+  $("feedPage").style.display = "";
+  // load feed renderer if you use app.js for posts
+  if (!window.__feedLoaded) {
+    window.__feedLoaded = true;
     const s = document.createElement("script");
     s.src = "/app.js";
-    s.onload = resolve;
-    s.onerror = () => reject(new Error("Failed to load app.js"));
+    s.defer = true;
     document.body.appendChild(s);
-  });
+  }
 }
 
-(async function main() {
-  const groupSlug = getSlugFromPath();
-  if (!groupSlug) {
-    location.replace("/");
-    return;
+function setNote(msg) {
+  const el = $("gateNote");
+  el.textContent = msg || "";
+}
+
+async function shareLink(link) {
+  try {
+    if (navigator.share) {
+      await navigator.share({ url: link });
+      return "Shared.";
+    }
+  } catch {}
+  try {
+    await navigator.clipboard.writeText(link);
+    return "Link copied.";
+  } catch {
+    return link; // fallback: show link
   }
+}
 
-  const visitorId = getOrCreateVisitorId();
+async function main() {
+  const backBtn = $("backBtn");
+  if (backBtn) backBtn.addEventListener("click", () => (location.href = "/"));
 
-  // Find group info from your API
-  const { groups } = await fetchJSON("/api/groups");
-  const group = (groups || []).find(
-    (g) => String(g.slug || "").toLowerCase() === groupSlug.toLowerCase() || String(g.slug_lc || "") === groupSlug.toLowerCase()
-  );
+  const visitorId = ensureVisitorId();
+  const slug = getSlugFromURL();
+  const creditedCode = getInvFromURL();
 
-  if (!group) {
+  if (!slug) {
+    $("gateTitle").textContent = "Missing group";
+    $("gateSub").textContent = "No group provided.";
     showGate();
-    setText("gateTitle", "Group not found");
-    setText("gateDesc", "This group slug isn’t in your D1 groups table.");
-    $("#shareBtn")?.setAttribute("disabled", "true");
     return;
   }
 
-  // Always keep URL clean: /<slug>
-  history.replaceState(null, "", encodeURI("/" + group.slug));
+  let group;
+  try {
+    group = await getGroup(slug);
+  } catch (e) {
+    $("gateTitle").textContent = "Group not found";
+    $("gateSub").textContent = String(e.message || e);
+    showGate();
+    return;
+  }
 
-  // Free group => show feed immediately
-  const invitesNeeded = Number(group.invites_needed || 0);
-  if (!invitesNeeded) {
+  // UI titles/avatars
+  $("gateTitle").textContent = group.title || group.slug;
+  $("channelTitle").textContent = (group.title || group.slug || "GROUP").toUpperCase();
+
+  const avatar = $("avatarImg");
+  if (avatar) {
+    if (group.avatar_url) {
+      avatar.src = group.avatar_url;
+      avatar.style.display = "";
+    } else {
+      avatar.style.display = "none";
+    }
+  }
+
+  const type = (group.type || "").toLowerCase();
+  const isFree = type === "free";
+
+  // Free groups: go straight to feed
+  if (isFree) {
     showFeed();
-    window.__ACTIVE_GROUP_SLUG = group.slug;
-    await loadApp();
     return;
   }
 
-  // Invite group => show gate + status
+  // Invite groups: show gate and status
   showGate();
-  setText("gateTitle", group.title || group.slug);
-  setText("gateDesc", group.description || "Invite only group");
 
   async function refreshStatus() {
-    const status = await fetchJSON(
-      `/api/referrals/status?group_slug=${encodeURIComponent(String(group.slug))}&visitor_id=${encodeURIComponent(visitorId)}`
-    );
+    const st = await getStatus(group.slug, visitorId);
+    const invites = Number(st?.invites || 0);
+    const needed = Number(st?.invites_needed || group.invites_needed || 0);
 
-    // Expected: { invites: number, needed: number, unlocked: boolean, my_code?: string }
-    const invites = Number(status.invites || 0);
-    const needed = Number(status.needed || invitesNeeded);
+    setProgress(invites, needed);
 
-    setText("countText", `${invites} / ${needed} invites`);
-
-    if (status.unlocked) {
+    if (st?.unlocked) {
       showFeed();
-      window.__ACTIVE_GROUP_SLUG = group.slug;
-      await loadApp();
       return true;
     }
     return false;
   }
 
-  // If user arrived with ?inv=someone, claim it ONCE when they click Share
-  const url = new URL(location.href);
-  const inviterCode = (url.searchParams.get("inv") || "").trim();
+  await refreshStatus();
 
-  $("#shareBtn")?.addEventListener("click", async () => {
-    $("#shareBtn").setAttribute("disabled", "true");
+  const shareBtn = $("shareBtn");
+  shareBtn.addEventListener("click", async () => {
+    shareBtn.disabled = true;
+    setNote("Working…");
+
     try {
-      // 1) Generate/get my code
-      const codeRes = await fetchJSON(
-        `/api/referrals/code?group_slug=${encodeURIComponent(String(group.slug))}&visitor_id=${encodeURIComponent(visitorId)}`
-      );
-      const myCode = codeRes.code || codeRes.my_code;
+      // Credit inviter ONLY when THIS visitor clicks Share (first time is deduped server-side)
+      const claimRes = await claimIfNeeded(group.slug, visitorId, creditedCode);
 
-      const slug = String(group.slug);
-      const shareUrl = `${location.origin}/${encodeURI(slug)}?inv=${encodeURIComponent(myCode)}`;
+      // Get my own code + build my share link
+      const myCode = await getMyCode(group.slug, visitorId);
+      const link = `${location.origin}/group?g=${encodeURIComponent(group.slug)}&inv=${encodeURIComponent(myCode)}`;
 
-      // 2) If I came from someone else’s inv link, claim it (server-side dedupe)
-      if (inviterCode) {
-        await fetchJSON("/api/referrals/claim", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            group_slug: String(group.slug),
-            visitor_id: visitorId,
-            inv: inviterCode,
-          }),
-        });
+      const msg = await shareLink(link);
+
+      if (claimRes?.credited) {
+        setNote(`${msg} +1 invite credited.`);
+      } else {
+        setNote(msg);
       }
 
-      // 3) Share / copy
-      try {
-        if (navigator.share) {
-          await navigator.share({ title: group.title || "Group", url: shareUrl });
-        } else {
-          await navigator.clipboard.writeText(shareUrl);
-          alert("Link copied:\n" + shareUrl);
-        }
-      } catch {
-        // ignore share cancel
-      }
-
-      // 4) Refresh status after sharing
       await refreshStatus();
     } catch (e) {
-      alert("Share failed: " + (e?.message || e));
+      setNote(String(e.message || e));
     } finally {
-      $("#shareBtn").removeAttribute("disabled");
+      shareBtn.disabled = false;
     }
   });
+}
 
-  // Initial status load
-  try {
-    await refreshStatus();
-  } catch (e) {
-    setText("countText", "Status failed to load");
-  }
-})();
+main();
