@@ -1,248 +1,252 @@
-// public/group.js
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
+// ---------- helpers ----------
 function $(id) {
   return document.getElementById(id);
 }
 
-function ensureVisitorId() {
-  const KEY = "visitor_id";
-  let vid = localStorage.getItem(KEY);
+function encodePathSegmentKeepPlus(s) {
+  return encodeURIComponent(String(s || "")).replace(/%2B/gi, "+");
+}
 
-  if (!vid) {
-    if (crypto?.randomUUID) vid = crypto.randomUUID();
-    else vid = "v_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    localStorage.setItem(KEY, vid);
+function getSlugFromPath() {
+  const raw = decodeURIComponent(location.pathname || "/");
+  const parts = raw.split("/").filter(Boolean);
+
+  // New route: /joinchat/<slug>
+  if (parts[0] === "joinchat") return (parts[1] || "").trim();
+
+  // Legacy route: /<slug>
+  return (parts[0] || "").trim();
+}
+
+function getInvFromUrl() {
+  return new URL(location.href).searchParams.get("inv") || "";
+}
+
+function getOrCreateVisitorId() {
+  const key = "vid_v1";
+  let v = "";
+  try {
+    v = localStorage.getItem(key) || "";
+  } catch {}
+  if (!v) {
+    v = crypto.randomUUID();
+    try {
+      localStorage.setItem(key, v);
+    } catch {}
   }
-
-  document.cookie = `visitor_id=${encodeURIComponent(vid)}; path=/; max-age=31536000; SameSite=Lax`;
-  return vid;
+  return v;
 }
 
-function getSlugFromURL() {
-  const url = new URL(location.href);
+const USER_ID = getOrCreateVisitorId();
 
-  // Option A
-  let slug = url.searchParams.get("g") || "";
+// ---------- DOM ----------
+const gate = $("gate");
+const feedPage = $("feedPage");
 
-  // fallback: if someone manually hits /media etc.
-  if (!slug) {
-    const p = url.pathname.replace(/^\/+|\/+$/g, "");
-    if (p && p !== "group") slug = decodeURIComponent(p);
-  }
+const gateTitle = $("gateTitle");
+const gateSub = $("gateSub");
+const gateNote = $("gateNote");
 
-  // IMPORTANT: URLSearchParams turns "+" into space sometimes. Undo that.
-  slug = (slug || "").trim().replace(/ /g, "+");
-  return slug;
+const progressFill = $("progressFill");
+const progressText = $("progressText");
+
+const shareBtn = $("shareBtn");
+
+// ---------- state ----------
+let currentGroup = null;
+let pollTimer = null;
+let appLoaded = false;
+
+// ---------- API ----------
+async function apiGet(url) {
+  const res = await fetch(url, { cache: "no-store" });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
 }
 
-function getInvFromURL() {
-  const url = new URL(location.href);
-  let inv = url.searchParams.get("inv") || "";
-  inv = (inv || "").trim().replace(/ /g, "+");
-  return inv;
+async function fetchAllGroups() {
+  const r = await apiGet("/api/groups");
+  if (!r.ok) throw new Error("groups_fetch_failed");
+  return r.data.groups || [];
 }
 
-async function fetchJSON(url, opts) {
-  const res = await fetch(url, { cache: "no-store", ...opts });
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch {}
-  return { res, data, text };
+function setProgress(current, needed) {
+  const n = Math.max(0, Number(needed || 0));
+  const c = Math.max(0, Number(current || 0));
+  progressText.textContent = `${Math.min(c, n)}/${n}`;
+  const pct = n ? Math.min(100, Math.round((c / n) * 100)) : 0;
+  progressFill.style.width = `${pct}%`;
 }
 
-async function getGroup(slug) {
-  // If your /api/groups supports ?slug= use it, otherwise fall back to list
-  const tryOne = await fetchJSON(`/api/groups?slug=${encodeURIComponent(slug)}`);
-  if (tryOne.res.ok && tryOne.data?.group) return tryOne.data.group;
-
-  const list = await fetchJSON("/api/groups");
-  if (!list.res.ok) throw new Error(`Failed to load groups: HTTP ${list.res.status}`);
-  const groups = list.data?.groups || [];
-
-  const want = slug.toLowerCase();
-  const found = groups.find(g => String(g.slug_lc || g.slug || "").toLowerCase() === want);
-  if (!found) throw new Error(`Group not found: ${slug}`);
-  return found;
+function markUnlockedLocally(slug) {
+  try {
+    const key = "unlocked_groups_v1";
+    const raw = localStorage.getItem(key) || "[]";
+    const arr = JSON.parse(raw);
+    const set = new Set(arr.map((x) => String(x).toLowerCase()));
+    set.add(String(slug || "").toLowerCase());
+    localStorage.setItem(key, JSON.stringify([...set]));
+  } catch {}
 }
 
-async function getStatus(groupSlug, visitorId) {
-  const u = new URL("/api/referrals/status", location.origin);
-  u.searchParams.set("group_slug", groupSlug);
-  u.searchParams.set("visitor_id", visitorId);
-
-  const { res, data } = await fetchJSON(u.toString());
-  if (!res.ok) return null;
-  return data;
-}
-
-async function getMyCode(groupSlug, visitorId) {
-  const { res, data, text } = await fetchJSON("/api/referrals/code", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ group_slug: groupSlug, visitor_id: visitorId })
-  });
-  if (!res.ok) throw new Error(text || `code failed: HTTP ${res.status}`);
-  return data?.code || "";
-}
-
-async function claimIfNeeded(groupSlug, visitorId, creditedCode) {
-  if (!creditedCode) return null;
-
-  const { res, data } = await fetchJSON("/api/referrals/claim", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      group_slug: groupSlug,
-      visitor_id: visitorId,
-      credited_code: creditedCode
-    })
-  });
-
-  if (!res.ok) return null;
-  return data;
-}
-
-function setProgress(invites, needed) {
-  const fill = $("progressFill");
-  const text = $("progressText");
-  const pct = needed > 0 ? Math.min(100, Math.round((invites / needed) * 100)) : 0;
-
-  fill.style.width = `${pct}%`;
-  text.textContent = `${invites}/${needed}`;
-}
-
+// ---------- view ----------
 function showGate() {
-  $("gate").style.display = "";
-  $("feedPage").style.display = "none";
+  if (feedPage) feedPage.style.display = "none";
+  if (gate) gate.style.display = "";
+}
+
+function loadAppOnce() {
+  if (appLoaded) return;
+  appLoaded = true;
+
+  const s = document.createElement("script");
+  s.src = "/app.js";
+  s.defer = true;
+  document.body.appendChild(s);
 }
 
 function showFeed() {
-  $("gate").style.display = "none";
-  $("feedPage").style.display = "";
-  // load feed renderer if you use app.js for posts
-  if (!window.__feedLoaded) {
-    window.__feedLoaded = true;
-    const s = document.createElement("script");
-    s.src = "/app.js";
-    s.defer = true;
-    document.body.appendChild(s);
+  if (gate) gate.style.display = "none";
+  if (feedPage) feedPage.style.display = "";
+  loadAppOnce();
+}
+
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+function startPolling() {
+  stopPolling();
+  pollTimer = setInterval(checkStatus, 3000);
+}
+
+// ---------- status ----------
+async function checkStatus() {
+  if (!currentGroup) return;
+
+  const slug = currentGroup.slug || "";
+  const r = await apiGet(`/api/referrals/status?group=${encodeURIComponent(slug)}&visitor_id=${encodeURIComponent(USER_ID)}`);
+  if (!r.ok) return;
+
+  const { invites = 0, needed = 0, unlocked = false } = r.data || {};
+  setProgress(invites, needed);
+
+  if (unlocked) {
+    markUnlockedLocally(slug);
+    gateNote.textContent = "Unlocked ✅";
+    shareBtn.disabled = true;
+    stopPolling();
+    showFeed();
   }
 }
 
-function setNote(msg) {
-  const el = $("gateNote");
-  el.textContent = msg || "";
+// ---------- share ----------
+async function ensureMyCode() {
+  const slug = currentGroup.slug || "";
+  const r = await apiGet(`/api/referrals/code?group=${encodeURIComponent(slug)}&visitor_id=${encodeURIComponent(USER_ID)}`);
+  if (!r.ok) throw new Error("code_failed");
+  return r.data.code || "";
 }
 
-async function shareLink(link) {
-  try {
-    if (navigator.share) {
-      await navigator.share({ url: link });
-      return "Shared.";
-    }
-  } catch {}
-  try {
-    await navigator.clipboard.writeText(link);
-    return "Link copied.";
-  } catch {
-    return link; // fallback: show link
-  }
+async function claimIfInvPresent() {
+  const inv = getInvFromUrl();
+  if (!inv || !currentGroup) return;
+
+  const slug = currentGroup.slug || "";
+  await fetch("/api/referrals/claim", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      group: slug,
+      visitor_id: USER_ID,
+      inv,
+    }),
+  }).catch(() => {});
 }
 
-async function main() {
-  const backBtn = $("backBtn");
-  if (backBtn) backBtn.addEventListener("click", () => (location.href = "/"));
+// ---------- init ----------
+async function init() {
+  showGate();
 
-  const visitorId = ensureVisitorId();
-  const slug = getSlugFromURL();
-  const creditedCode = getInvFromURL();
-
+  const slug = getSlugFromPath();
   if (!slug) {
-    $("gateTitle").textContent = "Missing group";
-    $("gateSub").textContent = "No group provided.";
-    showGate();
+    gateTitle.textContent = "Missing group slug";
+    gateSub.textContent = "Use /joinchat/<slug>";
     return;
   }
 
-  let group;
-  try {
-    group = await getGroup(slug);
-  } catch (e) {
-    $("gateTitle").textContent = "Group not found";
-    $("gateSub").textContent = String(e.message || e);
-    showGate();
+  gateTitle.textContent = "Loading…";
+
+  const groups = await fetchAllGroups();
+  const g = groups.find((x) => String(x.slug || "").toLowerCase() === String(slug).toLowerCase());
+
+  if (!g) {
+    gateTitle.textContent = "Group not found";
+    gateSub.textContent = "Check the slug in D1.";
     return;
   }
 
-  // UI titles/avatars
-  $("gateTitle").textContent = group.title || group.slug;
-  $("channelTitle").textContent = (group.title || group.slug || "GROUP").toUpperCase();
+  currentGroup = g;
 
-  const avatar = $("avatarImg");
-  if (avatar) {
-    if (group.avatar_url) {
-      avatar.src = group.avatar_url;
-      avatar.style.display = "";
-    } else {
-      avatar.style.display = "none";
-    }
-  }
+  // Title text
+  gateTitle.textContent = g.title || g.slug || "Group";
+  gateSub.textContent = g.type === "free" ? "Public feed" : "Invite people to unlock.";
 
-  const type = (group.type || "").toLowerCase();
-  const isFree = type === "free";
-
-  // Free groups: go straight to feed
-  if (isFree) {
+  // If free: show feed immediately
+  if (g.type === "free") {
     showFeed();
     return;
   }
 
-  // Invite groups: show gate and status
-  showGate();
+  // Locked: show gate + status
+  setProgress(0, g.invites_needed || 0);
 
-  async function refreshStatus() {
-    const st = await getStatus(group.slug, visitorId);
-    const invites = Number(st?.invites || 0);
-    const needed = Number(st?.invites_needed || group.invites_needed || 0);
-
-    setProgress(invites, needed);
-
-    if (st?.unlocked) {
-      showFeed();
-      return true;
-    }
-    return false;
-  }
-
-  await refreshStatus();
-
-  const shareBtn = $("shareBtn");
-  shareBtn.addEventListener("click", async () => {
-    shareBtn.disabled = true;
-    setNote("Working…");
-
-    try {
-      // Credit inviter ONLY when THIS visitor clicks Share (first time is deduped server-side)
-      const claimRes = await claimIfNeeded(group.slug, visitorId, creditedCode);
-
-      // Get my own code + build my share link
-      const myCode = await getMyCode(group.slug, visitorId);
-      const link = `${location.origin}/group?g=${encodeURIComponent(group.slug)}&inv=${encodeURIComponent(myCode)}`;
-
-      const msg = await shareLink(link);
-
-      if (claimRes?.credited) {
-        setNote(`${msg} +1 invite credited.`);
-      } else {
-        setNote(msg);
-      }
-
-      await refreshStatus();
-    } catch (e) {
-      setNote(String(e.message || e));
-    } finally {
-      shareBtn.disabled = false;
-    }
-  });
+  // if user arrived via ?inv= , we wait until THEY click Share to actually give credit
+  // claim endpoint is called on Share click (below), but we can also store inv now (server dedup handles anyway)
+  // We'll call claim when share is clicked.
+  startPolling();
 }
 
-main();
+shareBtn?.addEventListener("click", async () => {
+  if (!currentGroup) return;
+
+  try {
+    shareBtn.disabled = true;
+    gateNote.textContent = "Generating your invite link…";
+
+    // If they arrived via an invite, this is where we “count” it (server deduped)
+    await claimIfInvPresent();
+
+    const myCode = await ensureMyCode();
+    const slug = currentGroup.slug || "";
+
+    const shareUrl = `${location.origin}/joinchat/${encodePathSegmentKeepPlus(slug)}?inv=${myCode}`;
+
+    const tg = `https://t.me/share/url?url=${encodeURIComponent(shareUrl)}&text=${encodeURIComponent(
+      "Join this group"
+    )}`;
+
+    gateNote.textContent = "Opening share…";
+    window.open(tg, "_blank", "noopener,noreferrer");
+
+    // refresh status right away
+    await checkStatus();
+  } catch (e) {
+    gateNote.textContent = "Share failed. Try again.";
+  } finally {
+    shareBtn.disabled = false;
+  }
+});
+
+init().catch(() => {
+  gateTitle.textContent = "Failed to load";
+  gateSub.textContent = "Check /api/groups works and D1 binding exists.";
+});

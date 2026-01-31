@@ -140,39 +140,21 @@ async function loadGroups() {
 function getGroupFromUrl(groups) {
   const url = new URL(location.href);
 
-  // 1) Preferred: /<slug> (path-based)
-  // 2) Back-compat: /group?g=<slug>
-  // 3) Fallback: first group
-  const rawPath = (location.pathname || "/").replace(/^\/+|\/+$/g, ""); // trim leading/trailing /
-  const segs = rawPath ? rawPath.split("/") : [];
-  const first = (segs[0] || "").trim();
+  // Prefer old ?g= if present
+  let slug = (url.searchParams.get("g") || "").trim();
 
-  let slug = "";
-
-  // If path looks like a file or a known non-slug route, ignore it and use ?g=
-  const looksLikeFile = first.includes(".");
-  const isKnownRoute =
-    !first ||
-    ["index.html", "group.html", "group", "home"].includes(first.toLowerCase()) ||
-    first.toLowerCase() === "api";
-
-  if (!looksLikeFile && !isKnownRoute) {
-    // Support optional /g/<slug> style too (in case you ever use it)
-    if (first.toLowerCase() === "g" && segs[1]) slug = decodeURIComponent(segs[1]);
-    else slug = decodeURIComponent(first);
-  } else {
-    slug = (url.searchParams.get("g") || "").trim();
+  // Otherwise use pathname:
+  // /joinchat/<slug>
+  if (!slug) {
+    const parts = url.pathname.split("/").filter(Boolean).map((p) => decodeURIComponent(p));
+    if (parts[0] === "joinchat" && parts[1]) slug = parts[1].trim();
   }
 
   if (!slug) return { mode: "group", group: groups[0] || null, slug: groups[0]?.slug || "" };
   if (slug.toLowerCase() === "all") return { mode: "all", group: null, slug: "all" };
 
-  const slugLc = slug.toLowerCase();
-  const found =
-    groups.find(g => String(g.slug || "").toLowerCase() === slugLc) ||
-    groups.find(g => String(g.slug_lc || "").toLowerCase() === slugLc);
-
-  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {})?.slug || "" };
+  const found = groups.find((g) => String(g.slug || "").toLowerCase() === slug.toLowerCase());
+  return { mode: "group", group: found || groups[0] || null, slug: (found || groups[0] || {}).slug || "" };
 }
 
 function applyGroupToConfig(sel) {

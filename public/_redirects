@@ -1,3 +1,2 @@
-/group      /group.html  200
-/group/*    /group.html  200
-/*          /index.html  200
+/api/*       /api/:splat     200
+/joinchat/*  /group.html     200
